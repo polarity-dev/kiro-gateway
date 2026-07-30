@@ -43,7 +43,7 @@ for arg in "$@"; do
 done
 
 # ---------------------------------------------------------------------------
-step "1/6  Checking prerequisites"
+step "1/7  Checking prerequisites"
 
 command -v python3 >/dev/null || fail "python3 not found. Install Python 3.10+ first."
 ok "python3 $(python3 -c 'import sys; print(".".join(map(str, sys.version_info[:3])))')"
@@ -55,7 +55,7 @@ fi
 ok "Python dependencies present"
 
 # ---------------------------------------------------------------------------
-step "2/6  Locating Kiro credentials"
+step "2/7  Locating Kiro credentials"
 
 [ -f "$CREDS_FILE" ] || fail "$CREDS_FILE not found. Log in to Kiro IDE first."
 
@@ -64,7 +64,7 @@ SSO_REGION=$(python3 -c "import json;print(json.load(open('$CREDS_FILE')).get('r
 ok "Credentials found (SSO region: ${SSO_REGION:-unknown})"
 
 # ---------------------------------------------------------------------------
-step "3/6  Extracting profileArn from Kiro IDE logs"
+step "3/7  Extracting profileArn from Kiro IDE logs"
 
 # Kiro IDE logs every API call it makes, including the profileArn. The profile ID
 # is an opaque string that cannot be derived from your AWS account settings, and
@@ -90,7 +90,7 @@ fi
 ok "profileArn: $PROFILE_ARN"
 
 # ---------------------------------------------------------------------------
-step "4/6  Determining Q API region"
+step "4/7  Determining Q API region"
 
 # The ARN's region field is authoritative: it names the region actually serving
 # your subscription. Guessing by DNS is unreliable because several
@@ -110,7 +110,7 @@ fi
 ok "API region: $API_REGION"
 
 # ---------------------------------------------------------------------------
-step "5/6  Writing .env"
+step "5/7  Writing .env"
 
 if [ -f "$ENV_FILE" ]; then
   if [ "$ASSUME_YES" -eq 1 ]; then
@@ -151,7 +151,7 @@ EOF
 ok "Wrote $ENV_FILE"
 
 # ---------------------------------------------------------------------------
-step "6/6  Configuring Claude Code"
+step "6/7  Configuring Claude Code"
 
 if [ "$ASSUME_YES" -eq 1 ]; then
   reply="y"
@@ -218,6 +218,48 @@ with open(path, 'w') as f:
     f.write('\n')
 PY
     ok "Configured $CLAUDE_SETTINGS (existing settings preserved)"
+    ;;
+esac
+
+# ---------------------------------------------------------------------------
+step "7/7  Auto-approve kiro-credits skill"
+
+CREDITS_CMD='Bash(python3 ~/.claude/skills/kiro-credits/check.py)'
+
+if [ "$ASSUME_YES" -eq 1 ]; then
+  reply="y"
+else
+  printf '  Allow the kiro-credits skill to run without permission prompts? [Y/n] '
+  read -r reply
+fi
+case "$reply" in
+  [nN])
+    info "Skipped. You can add it later in $CLAUDE_SETTINGS under permissions.allow:"
+    info "  \"$CREDITS_CMD\""
+    ;;
+  *)
+    CREDITS_CMD="$CREDITS_CMD" SETTINGS="$CLAUDE_SETTINGS" python3 - <<'PY'
+import json, os
+
+path = os.environ['SETTINGS']
+cmd = os.environ['CREDITS_CMD']
+
+try:
+    with open(path) as f:
+        settings = json.load(f)
+except (FileNotFoundError, json.JSONDecodeError):
+    settings = {}
+
+perms = settings.setdefault('permissions', {})
+allow = perms.setdefault('allow', [])
+if cmd not in allow:
+    allow.append(cmd)
+
+with open(path, 'w') as f:
+    json.dump(settings, f, indent=2)
+    f.write('\n')
+PY
+    ok "Added kiro-credits to auto-approve in $CLAUDE_SETTINGS"
     ;;
 esac
 
