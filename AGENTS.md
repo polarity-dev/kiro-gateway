@@ -2,6 +2,14 @@
 
 This document provides essential information for AI agents (Claude, GPT, etc.) working in the Kiro Gateway codebase.
 
+> **Setting up the gateway or Claude Code for a user?** This document is about
+> *contributing to* the gateway code. For *installing and configuring* the
+> gateway + Claude Code on a user's machine, follow the setup runbook instead:
+> **[`.kiro/steering/setup.md`](.kiro/steering/setup.md)** (single source of
+> truth). The short version: `claude --version` (install with
+> `curl -fsSL https://claude.ai/install.sh | bash` if missing) → `./setup.sh -y`
+> → `python3 main.py` → verify.
+
 ## Project Philosophy
 
 **Kiro Gateway is a transparent proxy with minimal, purposeful modifications.**

@@ -9,6 +9,7 @@
 #   4. Writes .env and configures ~/.claude/settings.json for Claude Code
 #
 # Safe to re-run: prompts before overwriting anything.
+# Pass -y/--yes for non-interactive mode (accepts all prompts; for AI agents).
 
 set -euo pipefail
 
@@ -24,6 +25,22 @@ ok()    { printf '  \033[32m✓\033[0m %s\n' "$*"; }
 warn()  { printf '  \033[33m!\033[0m %s\n' "$*"; }
 fail()  { printf '  \033[31m✗\033[0m %s\n' "$*" >&2; exit 1; }
 step()  { printf '\n\033[1m%s\033[0m\n' "$*"; }
+
+# Non-interactive mode. When set (via -y/--yes), all prompts assume their
+# default answer: overwrite .env (after backing it up) and configure Claude
+# Code. This lets an AI agent run the installer unattended. The one thing it
+# cannot auto-answer is a missing profileArn — that still requires the user to
+# send a message in Kiro IDE first, so the script fails with guidance instead.
+ASSUME_YES=0
+for arg in "$@"; do
+  case "$arg" in
+    -y|--yes) ASSUME_YES=1 ;;
+    -h|--help)
+      printf 'Usage: %s [-y|--yes]\n\n  -y, --yes   Non-interactive: accept all prompts (for AI agents / CI)\n' "$0"
+      exit 0 ;;
+    *) fail "Unknown argument: $arg (try --help)" ;;
+  esac
+done
 
 # ---------------------------------------------------------------------------
 step "1/6  Checking prerequisites"
@@ -62,6 +79,9 @@ fi
 if [ -z "$PROFILE_ARN" ]; then
   warn "Could not find profileArn in Kiro IDE logs."
   info "Send at least one message in Kiro IDE, then re-run this script."
+  if [ "$ASSUME_YES" -eq 1 ]; then
+    fail "profileArn is required. Send a message in Kiro IDE, then re-run."
+  fi
   info "Or paste it manually (format: arn:aws:codewhisperer:REGION:ACCOUNT:profile/ID)"
   printf '  profileArn: '
   read -r PROFILE_ARN
@@ -93,8 +113,12 @@ ok "API region: $API_REGION"
 step "5/6  Writing .env"
 
 if [ -f "$ENV_FILE" ]; then
-  printf '  .env already exists. Overwrite? [y/N] '
-  read -r reply
+  if [ "$ASSUME_YES" -eq 1 ]; then
+    reply="y"
+  else
+    printf '  .env already exists. Overwrite? [y/N] '
+    read -r reply
+  fi
   case "$reply" in
     [yY]) cp "$ENV_FILE" "$ENV_FILE.bak" && info "Backed up to .env.bak" ;;
     *)    fail "Aborted. Edit .env manually with the values shown above." ;;
@@ -129,8 +153,12 @@ ok "Wrote $ENV_FILE"
 # ---------------------------------------------------------------------------
 step "6/6  Configuring Claude Code"
 
-printf '  Point Claude Code at this gateway? [Y/n] '
-read -r reply
+if [ "$ASSUME_YES" -eq 1 ]; then
+  reply="y"
+else
+  printf '  Point Claude Code at this gateway? [Y/n] '
+  read -r reply
+fi
 case "$reply" in
   [nN])
     info "Skipped. To do it later, set these in $CLAUDE_SETTINGS:"

@@ -34,17 +34,40 @@ Made with ❤️ by [@Jwadow](https://github.com/jwadow)
 
 ## 🚀 Polarity Setup (Enterprise / IdC)
 
+**This repo is both the gateway and the setup kit for running Claude Code against it locally.**
+Cloning it gets you everything you need to point Claude Code (and other AI coding tools) at your
+Kiro subscription.
+
+### 🤖 Easiest path: let your AI tool do it
+
+If you have **Kiro IDE** (or any AI coding assistant) open in this repo, just ask it:
+
+> *"Set up kiro-gateway and Claude Code for me."*
+
+or run the slash command **`/setup-gateway`**.
+
+The repo ships an always-on setup runbook ([`.kiro/steering/setup.md`](.kiro/steering/setup.md),
+referenced from [`CLAUDE.md`](CLAUDE.md) and [`AGENTS.md`](AGENTS.md)) that walks any agent through
+the whole flow: checking/installing Claude Code, running the installer, starting the gateway,
+verifying it end to end, and offering to install the `kiro-credits` skill globally. Kiro loads it
+automatically; Claude Code, Cursor, and Codex pick it up from `CLAUDE.md` / `AGENTS.md`.
+
+### 🛠️ Manual path
+
 **If you authenticate through Polarity's AWS IAM Identity Center, use this path.** It replaces the
 manual [Configuration](#%EF%B8%8F-configuration) steps below.
 
 ```bash
 git clone https://github.com/polarity-dev/kiro-gateway.git
 cd kiro-gateway
-./setup.sh
+./setup.sh              # add -y for non-interactive (AI agents / CI)
 python3 main.py
 ```
 
 Then run `claude` from any terminal. No environment exports needed.
+
+> **Prerequisite:** [Claude Code](https://code.claude.com/docs/en/setup) must be installed. Check
+> with `claude --version`; if missing, install with `curl -fsSL https://claude.ai/install.sh | bash`.
 
 ### What setup.sh does
 
