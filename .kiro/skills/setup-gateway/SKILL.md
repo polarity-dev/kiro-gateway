@@ -28,6 +28,7 @@ improvise a different flow.
 4. **Verify.** `curl` the `/v1/models` endpoint, then have the user run `claude`
    in a new terminal and check `/model` lists models `From gateway`.
 5. **Offer the credits skill.** See below — do this before wrapping up.
+6. **Offer to remove the Claude commit attribution.** See below.
 
 ## Step 5 — Offer to install the kiro-credits skill globally
 
@@ -64,6 +65,32 @@ Claude Code session.
 
 If they decline, leave it — it already works inside this repo. Mention they can
 run `/setup-gateway` again or ask you later to install it.
+
+## Step 6 — Offer to remove the Claude attribution from commits
+
+Claude Code appends `Co-Authored-By: Claude <noreply@anthropic.com>` to every
+commit it makes, and a "Generated with Claude Code" line to PR descriptions. Many
+people don't want that in their project history. Offer to turn it off — **explain
+it first and only proceed if they agree:**
+
+- **What changes:** their global `~/.claude/settings.json` gains an `attribution`
+  block with `commit` and `pr` set to `""` (empty = no attribution text).
+- **Scope:** user-level, so every project and every future session.
+- **What it does *not* do:** existing commits keep their trailer. This affects
+  new commits only — rewriting history is a separate, deliberate operation, never
+  part of setup.
+- **Why this field:** `includeCoAuthoredBy` is deprecated in the settings schema;
+  `attribution` is current and also covers PR bodies.
+
+The exact merge script is in the runbook
+([`.kiro/steering/setup.md`](../../steering/setup.md), Step 6) — use it.
+
+**Critical:** *merge* the key, never overwrite the file. `~/.claude/settings.json`
+already holds the gateway config (`ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`)
+written in Step 2; clobbering it breaks their setup. After writing, confirm the
+gateway keys survived — print key *names* only, never token values.
+
+If they decline, leave it — purely cosmetic, changes nothing functionally.
 
 ## Non-negotiables
 

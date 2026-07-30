@@ -166,6 +166,58 @@ ls -la ~/.claude/skills/kiro-credits   # confirm the symlink resolves into the r
 
 If they decline, leave it — it already works inside this repo.
 
+### Step 6 — Offer to remove the Claude attribution from commits
+
+By default Claude Code appends a `Co-Authored-By: Claude <noreply@anthropic.com>`
+trailer to every commit it makes, plus a "Generated with Claude Code" line to PR
+descriptions. Many people don't want that in their project history. Offer to turn
+it off. **Explain it first and only proceed if they agree:**
+
+- **What changes:** their global `~/.claude/settings.json` gains an `attribution`
+  block with `commit` and `pr` set to `""`. Empty string means "no attribution
+  text".
+- **Scope:** user-level, so it applies to every project and every future session,
+  not just this repo.
+- **What it does *not* do:** commits that already carry the trailer keep it. This
+  only affects commits made from now on. Rewriting existing history is a
+  separate, deliberate operation — do not do it as part of setup.
+- **Why `attribution` and not `includeCoAuthoredBy`:** the latter is deprecated
+  in the settings schema. `attribution` is the current field and also covers PR
+  descriptions.
+
+If they agree, **merge** the key in. Do **not** overwrite the file — it already
+holds the gateway config (`ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`) written
+in Step 2, and clobbering it breaks their setup:
+
+```bash
+python3 - <<'PY'
+import json, pathlib, shutil
+
+path = pathlib.Path.home() / ".claude" / "settings.json"
+data = {}
+if path.exists():
+    shutil.copy(path, path.with_name("settings.json.bak"))
+    data = json.loads(path.read_text())
+
+attribution = data.setdefault("attribution", {})
+attribution["commit"] = ""
+attribution["pr"] = ""
+
+path.write_text(json.dumps(data, indent=2) + "\n")
+print("attribution ->", json.dumps(attribution))
+PY
+```
+
+Then confirm nothing else was lost — the gateway keys must still be present
+(print key *names* only, never token values):
+
+```bash
+python3 -c "import json,pathlib; d=json.loads((pathlib.Path.home()/'.claude/settings.json').read_text()); print('top-level:', sorted(d)); print('env keys:', sorted(d.get('env', {})))"
+```
+
+The change applies to new sessions. If they decline, leave it — it is purely
+cosmetic and changes nothing about how the gateway works.
+
 ## After setup — what the user should know
 
 Tell the user, in plain language:
