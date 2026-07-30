@@ -27,12 +27,12 @@ Made with ❤️ by [@Jwadow](https://github.com/jwadow)
 > [polarity-dev/kiro-gateway](https://github.com/polarity-dev/kiro-gateway).
 >
 > It adds support for **Kiro IDE Enterprise accounts (AWS IAM Identity Center)**, which the upstream
-> project does not fully cover. See [Polarity Setup](#-polarity-setup-enterprise--idc) for the
+> project does not fully cover. See [Enterprise / IdC Setup](#-enterprise--idc-setup) for the
 > automated installer and [Fork Changes](#-fork-changes) for what differs from upstream.
 
 ---
 
-## 🚀 Polarity Setup (Enterprise / IdC)
+## 🚀 Enterprise / IdC Setup
 
 **This repo is both the gateway and the setup kit for running Claude Code against it locally.**
 Cloning it gets you everything you need to point Claude Code (and other AI coding tools) at your
@@ -54,8 +54,9 @@ automatically; Claude Code, Cursor, and Codex pick it up from `CLAUDE.md` / `AGE
 
 ### 🛠️ Manual path
 
-**If you authenticate through Polarity's AWS IAM Identity Center, use this path.** It replaces the
-manual [Configuration](#%EF%B8%8F-configuration) steps below.
+**If you sign in to Kiro IDE with an AWS IAM Identity Center user (your own or your
+organization's), use this path.** It replaces the manual [Configuration](#%EF%B8%8F-configuration)
+steps below.
 
 ```bash
 git clone https://github.com/polarity-dev/kiro-gateway.git
@@ -87,7 +88,7 @@ overwriting anything.
 
 ### Requirements
 
-- macOS with [Kiro IDE](https://kiro.dev/) installed and logged in to your Polarity account
+- macOS with [Kiro IDE](https://kiro.dev/) installed and signed in with your AWS IAM Identity Center user
 - Python 3.10+
 - At least one message sent in Kiro IDE, so the `profileArn` appears in its logs
 

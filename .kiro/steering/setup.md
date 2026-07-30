@@ -19,8 +19,8 @@ Enterprise/IdC quirks.
 
 ## Who this is for
 
-Polarity colleagues on **macOS** who authenticate through the AWS IAM Identity
-Center (Enterprise / IdC) and have **Kiro IDE installed and logged in**. The
+Anyone on **macOS** who signs in to Kiro IDE with an AWS IAM Identity Center
+user (Enterprise / IdC) and has **Kiro IDE installed and logged in**. The
 gateway then reuses Kiro IDE's own credentials — the user never pastes a token.
 
 If the user is not on macOS, stop and tell them the automated path is macOS-only
@@ -92,8 +92,14 @@ prompts. This single script:
 - Generates a random `PROXY_API_KEY` and writes `.env`.
 - Configures `~/.claude/settings.json` to point Claude Code at
   `http://localhost:8000` using `ANTHROPIC_AUTH_TOKEN` (not `ANTHROPIC_API_KEY`
-  — only the former skips the interactive OAuth browser login) and enables
-  gateway model discovery.
+  — only the former skips the interactive OAuth browser login), enables
+  gateway model discovery, and sets the initial model to `claude-auto · 1x`
+  (Kiro's server-side auto-router). This is written as the top-level `model`
+  key, not as `ANTHROPIC_MODEL`: the env var overrides `/model` on every launch
+  (so the user's choice never sticks) and, worse, forces Claude Code to render
+  any `claude-opus-4.*` id as the retired *Claude Opus 4* with a deprecation
+  warning. If the runbook finds a legacy `ANTHROPIC_MODEL` in `env`, the
+  installer drops it.
 
 **If it fails with `Could not find profileArn`:** the user has not sent a
 message in Kiro IDE yet, or Kiro hasn't logged one. Ask them to send a message
@@ -134,6 +140,16 @@ curl -s localhost:8000/v1/models -H "Authorization: Bearer $(grep -m1 '^PROXY_AP
 If that prints a list of model IDs, the gateway and Kiro auth are working. Then
 tell the user to open a **new terminal** and run `claude` — inside it, `/model`
 should list models labelled `From gateway`.
+
+**Heads-up on the picker names.** Every entry starts with `claude-` — even the
+non-Claude ones like `claude-auto · 1x`, `claude-minimax-m2.5 · …`, and
+`claude-qwen3-coder-next · …`. That prefix is cosmetic: Claude Code's gateway
+model discovery
+[silently drops any `/v1/models` entry whose id doesn't begin with
+`claude` or `anthropic`](https://code.claude.com/docs/en/llm-gateway-protocol#model-discovery),
+so we prefix the aliases in `MODEL_ALIASES` to get them into the picker. The
+real Kiro modelId (`auto`, `minimax-m2.5`, …) is still what the gateway
+forwards upstream — nothing changes on the wire.
 
 ### Step 5 — Offer to install the kiro-credits skill globally
 
