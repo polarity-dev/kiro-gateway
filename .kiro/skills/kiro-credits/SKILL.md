@@ -23,8 +23,17 @@ overage room and rate, next reset date. Data is live at query time.
 
 ## How to run it
 
+Run `check.py` next to this SKILL.md file. The script resolves its own
+location via symlink, so it works from any cwd:
+
 ```bash
-python3 .claude/skills/kiro-credits/check.py
+python3 "$(dirname "$(readlink -f "$0")")/check.py"
+```
+
+Or more simply, if invoked by the agent:
+
+```bash
+python3 ~/.claude/skills/kiro-credits/check.py
 ```
 
 Show the output to the user as-is — it already renders a progress bar and
@@ -32,10 +41,9 @@ formats numbers. Do not paraphrase.
 
 ## Prerequisites
 
-- Must be run from within the kiro-gateway repo (the script imports
-  `kiro.auth` and `kiro.config` to reuse the gateway's auth logic).
-- `.env` or `credentials.json` must be configured (same as running the
-  gateway itself — if `python3 main.py` works, this script works).
+- `.env` or `credentials.json` must be configured in the kiro-gateway repo
+  (same as running the gateway itself — if `python3 main.py` works there,
+  this script works from anywhere via symlink).
 
 ## Important non-obvious fact
 

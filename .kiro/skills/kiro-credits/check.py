@@ -26,10 +26,17 @@ import re
 import sys
 from pathlib import Path
 
-# Skill lives at <repo>/.claude/skills/kiro-credits/check.py — repo root is 3 levels up.
+# Skill lives at <repo>/.kiro/skills/kiro-credits/check.py — repo root is 3 levels up.
+# When invoked via symlink from another repo, __file__ resolves to the real path
+# inside kiro-gateway, so _REPO_ROOT is always correct.
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
+
+# chdir to repo root so kiro.config's load_dotenv() finds .env regardless of
+# the caller's working directory (e.g. when invoked via global symlink).
+import os  # noqa: E402
+os.chdir(_REPO_ROOT)
 
 import httpx  # noqa: E402
 from dotenv import load_dotenv  # noqa: E402
