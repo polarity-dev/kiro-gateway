@@ -1,6 +1,6 @@
 ---
 name: enable-claude-code
-description: Convertire una repo Kiro (con `.kiro/steering/` e MCP) in una repo dual-mode compatibile sia con Kiro che con Claude Code. Migra i file steering triggerati a skill in `.kiro/skills/<name>/SKILL.md`, crea i symlink `.claude/skills` e `.mcp.json`, scrive `CLAUDE.md` come entrypoint, prepara `.claude/settings.local.json.example`, aggiorna `.gitignore`, ripulisce i vecchi `#skill-name` refs. Usare quando l'utente chiede "rendi questa repo compatibile con Claude Code", "converti da Kiro a dual-mode", "porta le skill fuori da steering", "aggiungi supporto Claude Code a questo progetto".
+description: Rendere una repo Kiro compatibile con Claude Code. Usare SEMPRE quando l'utente chiede di far funzionare, allineare, adattare, configurare, portare, o convertire una repo per Claude Code, dual-mode, o entrambi gli IDE. Migra steering a skill, crea symlink e CLAUDE.md.
 ---
 
 # Enable Claude Code in a Kiro repo

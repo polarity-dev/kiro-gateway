@@ -55,9 +55,9 @@ from kiro.utils import get_kiro_headers  # noqa: E402
 def _build_auth() -> KiroAuthManager:
     load_dotenv()
     if KIRO_CLI_DB_FILE:
-        return KiroAuthManager(sqlite_db=KIRO_CLI_DB_FILE, region=REGION)
+        return KiroAuthManager(sqlite_db=KIRO_CLI_DB_FILE, profile_arn=PROFILE_ARN, region=REGION)
     if KIRO_CREDS_FILE:
-        return KiroAuthManager(creds_file=KIRO_CREDS_FILE, region=REGION)
+        return KiroAuthManager(creds_file=KIRO_CREDS_FILE, profile_arn=PROFILE_ARN, region=REGION)
     if REFRESH_TOKEN:
         return KiroAuthManager(refresh_token=REFRESH_TOKEN, profile_arn=PROFILE_ARN, region=REGION)
     raise SystemExit(
