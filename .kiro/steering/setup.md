@@ -175,14 +175,62 @@ proceed if they agree:**
 If they agree:
 
 ```bash
-mkdir -p ~/.claude/skills
+mkdir -p ~/.claude/skills ~/.kiro/skills
 ln -sfn "$(pwd)/.kiro/skills/kiro-credits" ~/.claude/skills/kiro-credits
-ls -la ~/.claude/skills/kiro-credits   # confirm the symlink resolves into the repo
+ln -sfn "$(pwd)/.kiro/skills/kiro-credits" ~/.kiro/skills/kiro-credits
+ls -la ~/.claude/skills/kiro-credits ~/.kiro/skills/kiro-credits   # both should resolve into the repo
 ```
+
+Symlink into **both** `~/.claude/skills/` and `~/.kiro/skills/` — the skill has
+to be reachable regardless of which IDE the user opens next. Kiro reads
+`~/.kiro/skills/`, Claude Code reads `~/.claude/skills/`; a single source
+folder in the repo, two entry points.
 
 If they decline, leave it — it already works inside this repo.
 
-### Step 6 — Offer to remove the Claude attribution from commits
+### Step 6 — Offer to install the enable-claude-code skill globally
+
+Same pattern as Step 5, for a different skill. **Explain first, only proceed if
+they agree:**
+
+- **What it is:** a skill named `enable-claude-code` in this repo at
+  `.kiro/skills/enable-claude-code/`.
+- **What it does:** takes any Kiro repo that today uses only `.kiro/steering/`
+  and converts it into a dual-mode repo that runs natively on both Kiro and
+  Claude Code. Migrates trigger-based steering files to `.kiro/skills/<name>/SKILL.md`,
+  creates the `.claude/skills` and `.mcp.json` symlinks, writes `CLAUDE.md` as
+  entrypoint, cleans up `#skill-name` refs. Follows the exact pattern applied to
+  `polarity-marketing-and-sales`.
+- **Why globally:** the user will run this from *other* repos — repos that
+  aren't dual-mode yet. If the skill lived only inside `kiro-gateway`, they
+  couldn't invoke it from the repo they're trying to migrate. Global install
+  means "open any Kiro repo, ask *rendi questa repo compatibile con Claude
+  Code*, and it works."
+- **Why both `~/.kiro/skills/` and `~/.claude/skills/`:** the user might open
+  the target repo in Kiro (they've never migrated anything yet) or in Claude
+  Code (they've already migrated some repos and are working from there). The
+  skill has to be reachable from either IDE. A single source folder in this
+  repo, two symlink entry points — no duplication.
+- **Symlink, not copy:** the skill's `templates/` are versioned with this repo.
+  A symlink stays in sync when the repo is updated; a copy would rot.
+
+If they agree:
+
+```bash
+mkdir -p ~/.claude/skills ~/.kiro/skills
+ln -sfn "$(pwd)/.kiro/skills/enable-claude-code" ~/.claude/skills/enable-claude-code
+ln -sfn "$(pwd)/.kiro/skills/enable-claude-code" ~/.kiro/skills/enable-claude-code
+ls -la ~/.claude/skills/enable-claude-code ~/.kiro/skills/enable-claude-code
+```
+
+Tell them: from now on, in any Kiro repo they open (in either IDE), they can
+ask *"rendi questa repo compatibile con Claude Code"* / *"convert this repo to
+dual-mode"* and the skill runs. It's a guided flow: they'll review the
+classification of each steering file before anything gets moved.
+
+If they decline, leave it — it still works when invoked inside this repo.
+
+### Step 7 — Offer to remove the Claude attribution from commits
 
 By default Claude Code appends a `Co-Authored-By: Claude <noreply@anthropic.com>`
 trailer to every commit it makes, plus a "Generated with Claude Code" line to PR

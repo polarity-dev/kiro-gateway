@@ -1,0 +1,23 @@
+# {{PROJECT_NAME}}: Claude Code entrypoint
+
+Questo workspace è condiviso tra Kiro e Claude Code. Il contenuto vive in un'unica copia fisica:
+
+- **Steering persistente** (contesto sempre attivo): `.kiro/steering/*.md`, importato qui sotto.
+- **Skill on-demand**: `.kiro/skills/<nome>/SKILL.md`, esposte a Claude Code via il symlink `.claude/skills` → `../.kiro/skills`. Si auto-attivano dalla loro `description`; non serve invocarle a mano.
+
+Non duplicare contenuto in questo file: importa dai file steering, che restano la sorgente unica letta anche da Kiro.
+
+## Steering (sempre attivo)
+
+{{STEERING_IMPORTS}}
+
+## Setup per-utente (non committato)
+
+Ogni persona configura in locale, partendo dai template `.example`:
+
+1. **MCP server** (se il repo ne usa): copia `.kiro/settings/mcp.json.example` in `.kiro/settings/mcp.json` con i tuoi valori. Poi crea il symlink che espone il file a Claude Code:
+   ```bash
+   ln -s .kiro/settings/mcp.json .mcp.json
+   ```
+   Entrambi (`.kiro/settings/mcp.json` e `.mcp.json`) sono gitignored: la config MCP è per-utente. I campi `autoApprove`/`disabled` sono letti solo da Kiro, Claude Code li ignora.
+2. **Permessi Claude Code**: copia `.claude/settings.local.json.example` in `.claude/settings.local.json` e adatta l'allow-list al tuo livello di rischio. È l'equivalente dell'`autoApprove` di Kiro, per-utente e gitignored. Gestibile anche con `/permissions`.
