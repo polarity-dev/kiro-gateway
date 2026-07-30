@@ -245,22 +245,48 @@ HIDDEN_MODELS: Dict[str, str] = {
 #       "gpt-5": "claude-sonnet-4.5"
 #   }
 #
-# Default: {"auto-kiro": "auto"} to avoid Cursor IDE conflict
+# Default: pretty display names carrying the Kiro rate multiplier and context
+# window, so the picker in Claude Code / Cursor shows the cost of each model
+# at a glance. Rate multipliers are the ones the Kiro IDE uses to bill credits
+# (verified via q.{region}.amazonaws.com/ListAvailableModels on 2026-07-30).
+# The alias VALUE is the real Kiro modelId that gets forwarded upstream.
 MODEL_ALIASES: Dict[str, str] = {
-    "auto-kiro": "auto",  # Default alias to avoid Cursor's "auto" model conflict
+    "auto · 1x":                        "auto",
+    "qwen3-coder-next · 0.05x · 256k":  "qwen3-coder-next",
+    "minimax-m2.1 · 0.15x · 196k":      "minimax-m2.1",
+    "minimax-m2.5 · 0.25x · 196k":      "minimax-m2.5",
+    "claude-haiku-4.5 · 0.4x · 200k":   "claude-haiku-4.5",
+    "claude-sonnet-4 · 1.3x · 200k":    "claude-sonnet-4",
+    "claude-sonnet-4.5 · 1.3x · 200k":  "claude-sonnet-4.5",
+    "claude-sonnet-4.6 · 1.3x · 1M":    "claude-sonnet-4.6",
+    "claude-sonnet-5 · 1.3x · 1M":      "claude-sonnet-5",
+    "claude-opus-4.5 · 2.2x · 200k":    "claude-opus-4.5",
+    "claude-opus-4.6 · 2.2x · 1M":      "claude-opus-4.6",
+    "claude-opus-4.7 · 2.2x · 1M":      "claude-opus-4.7",
+    "claude-opus-4.8 · 2.2x · 1M":      "claude-opus-4.8",
+    "claude-opus-5 · 2.2x · 1M":        "claude-opus-5",
 }
 
 # Models to hide from /v1/models endpoint.
 # These models still work when requested directly, but are not shown in the model list.
-# This is useful when you want to show only aliases instead of original model names.
-#
-# Use case: Hide "auto" from list to show only "auto-kiro" alias, avoiding confusion.
-#
-# Example:
-#   HIDDEN_FROM_LIST = ["auto", "claude-old-model"]
-#
-# Default: ["auto"] to show only "auto-kiro" alias
-HIDDEN_FROM_LIST: List[str] = ["auto"]
+# We hide every raw Kiro modelId so only the pretty alias names above appear
+# in the picker — no duplicates.
+HIDDEN_FROM_LIST: List[str] = [
+    "auto",
+    "qwen3-coder-next",
+    "minimax-m2.1",
+    "minimax-m2.5",
+    "claude-haiku-4.5",
+    "claude-sonnet-4",
+    "claude-sonnet-4.5",
+    "claude-sonnet-4.6",
+    "claude-sonnet-5",
+    "claude-opus-4.5",
+    "claude-opus-4.6",
+    "claude-opus-4.7",
+    "claude-opus-4.8",
+    "claude-opus-5",
+]
 
 # ==================================================================================================
 # Fallback Models Configuration (DNS Failure Recovery)
@@ -273,17 +299,20 @@ HIDDEN_FROM_LIST: List[str] = ["auto"]
 # - Some models may not be available on your Kiro plan (e.g., Opus on free tier)
 # - New models released after this version won't appear here
 # - Update gateway regularly to get the latest model list
+# Last verified against runtime.eu-central-1.kiro.dev on 2026-07-30 via
+# scripts/probe_models.py. Re-run that script to refresh the list.
 FALLBACK_MODELS: List[Dict[str, str]] = [
     {"modelId": "auto"},
     {"modelId": "claude-sonnet-4"},
     {"modelId": "claude-sonnet-4.5"},
     {"modelId": "claude-sonnet-4.6"},
+    {"modelId": "claude-sonnet-5"},
     {"modelId": "claude-haiku-4.5"},
     {"modelId": "claude-opus-4.5"},
     {"modelId": "claude-opus-4.6"},
     {"modelId": "claude-opus-4.7"},
-    {"modelId": "deepseek-3.2"},
-    {"modelId": "glm-5"},
+    {"modelId": "claude-opus-4.8"},
+    {"modelId": "claude-opus-5"},
     {"modelId": "minimax-m2.1"},
     {"modelId": "minimax-m2.5"},
     {"modelId": "qwen3-coder-next"},

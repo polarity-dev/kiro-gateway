@@ -43,7 +43,7 @@ if TYPE_CHECKING:
 
 # Valid model IDs accepted by runtime.{region}.kiro.dev
 # Generated from FALLBACK_MODELS to maintain single source of truth
-from kiro.config import FALLBACK_MODELS
+from kiro.config import FALLBACK_MODELS, MODEL_ALIASES
 
 VALID_RUNTIME_MODEL_IDS: set = {model["modelId"] for model in FALLBACK_MODELS}
 
@@ -196,16 +196,26 @@ def get_model_id_for_kiro(model_name: str, hidden_models: Dict[str, str]) -> str
     This is a simple helper for converters that don't have access to the full
     ModelResolver. It normalizes the name and checks hidden models.
     
+    Resolution order mirrors ModelResolver.resolve():
+      0. Resolve alias (custom display name → real Kiro modelId)
+      1. Normalize name (dashes→dots, strip dates)
+      2. Check hidden models
+      3. Pass-through
+
+    Layer 0 is critical: display names like "claude-opus-4.8 · 2.2x · 1M"
+    only exist as MODEL_ALIASES keys. Without resolving them here, the raw
+    display name would be forwarded to Kiro and rejected with HTTP 400.
+
     For hidden models (like claude-3.7-sonnet), returns the internal Kiro ID.
     For regular models, returns the normalized name.
-    
+
     Args:
         model_name: External model name from client
         hidden_models: Dict mapping display names to internal Kiro IDs
-    
+
     Returns:
         Model ID to send to Kiro API
-    
+
     Examples:
         >>> get_model_id_for_kiro("claude-haiku-4-5-20251001", {})
         'claude-haiku-4.5'
@@ -214,7 +224,9 @@ def get_model_id_for_kiro(model_name: str, hidden_models: Dict[str, str]) -> str
         >>> get_model_id_for_kiro("claude-3-7-sonnet", {"claude-3.7-sonnet": "CLAUDE_3_7_SONNET_20250219_V1_0"})
         'CLAUDE_3_7_SONNET_20250219_V1_0'
     """
-    normalized = normalize_model_name(model_name)
+    # Layer 0: Resolve alias (custom display name → real Kiro modelId)
+    resolved = MODEL_ALIASES.get(model_name, model_name)
+    normalized = normalize_model_name(resolved)
     internal = hidden_models.get(normalized, normalized)
     return to_runtime_model_id(internal)
 
