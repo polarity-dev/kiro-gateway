@@ -250,21 +250,31 @@ HIDDEN_MODELS: Dict[str, str] = {
 # at a glance. Rate multipliers are the ones the Kiro IDE uses to bill credits
 # (verified via q.{region}.amazonaws.com/ListAvailableModels on 2026-07-30).
 # The alias VALUE is the real Kiro modelId that gets forwarded upstream.
+# Non-Claude Kiro models (auto, minimax, qwen) are prefixed with "claude-" so
+# Claude Code's /model picker actually lists them. Its gateway model-discovery
+# code (documented at code.claude.com/docs/en/llm-gateway-protocol#model-discovery)
+# hard-drops any entry whose id doesn't begin with "claude" or "anthropic":
+#
+#     "ignores entries whose `id` doesn't begin with `claude` or `anthropic`"
+#
+# The prefix is cosmetic — the alias VALUE is still the real Kiro modelId that
+# gets forwarded upstream, so nothing changes on the wire. Without it, "auto"
+# and the minimax/qwen aliases silently disappear from /model in Claude Code.
 MODEL_ALIASES: Dict[str, str] = {
-    "auto · 1x":                        "auto",
-    "qwen3-coder-next · 0.05x · 256k":  "qwen3-coder-next",
-    "minimax-m2.1 · 0.15x · 196k":      "minimax-m2.1",
-    "minimax-m2.5 · 0.25x · 196k":      "minimax-m2.5",
-    "claude-haiku-4.5 · 0.4x · 200k":   "claude-haiku-4.5",
-    "claude-sonnet-4 · 1.3x · 200k":    "claude-sonnet-4",
-    "claude-sonnet-4.5 · 1.3x · 200k":  "claude-sonnet-4.5",
-    "claude-sonnet-4.6 · 1.3x · 1M":    "claude-sonnet-4.6",
-    "claude-sonnet-5 · 1.3x · 1M":      "claude-sonnet-5",
-    "claude-opus-4.5 · 2.2x · 200k":    "claude-opus-4.5",
-    "claude-opus-4.6 · 2.2x · 1M":      "claude-opus-4.6",
-    "claude-opus-4.7 · 2.2x · 1M":      "claude-opus-4.7",
-    "claude-opus-4.8 · 2.2x · 1M":      "claude-opus-4.8",
-    "claude-opus-5 · 2.2x · 1M":        "claude-opus-5",
+    "claude-auto · 1x":                       "auto",
+    "claude-qwen3-coder-next · 0.05x · 256k": "qwen3-coder-next",
+    "claude-minimax-m2.1 · 0.15x · 196k":     "minimax-m2.1",
+    "claude-minimax-m2.5 · 0.25x · 196k":     "minimax-m2.5",
+    "claude-haiku-4.5 · 0.4x · 200k":         "claude-haiku-4.5",
+    "claude-sonnet-4 · 1.3x · 200k":          "claude-sonnet-4",
+    "claude-sonnet-4.5 · 1.3x · 200k":        "claude-sonnet-4.5",
+    "claude-sonnet-4.6 · 1.3x · 1M":          "claude-sonnet-4.6",
+    "claude-sonnet-5 · 1.3x · 1M":            "claude-sonnet-5",
+    "claude-opus-4.5 · 2.2x · 200k":          "claude-opus-4.5",
+    "claude-opus-4.6 · 2.2x · 1M":            "claude-opus-4.6",
+    "claude-opus-4.7 · 2.2x · 1M":            "claude-opus-4.7",
+    "claude-opus-4.8 · 2.2x · 1M":            "claude-opus-4.8",
+    "claude-opus-5 · 2.2x · 1M":              "claude-opus-5",
 }
 
 # Models to hide from /v1/models endpoint.
@@ -380,7 +390,7 @@ LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO").upper()
 # This helps handle "stuck" requests when the model takes too long to think.
 # Default: 30 seconds (recommended for production)
 # Set a lower value (e.g., 10-15) for more aggressive retry.
-FIRST_TOKEN_TIMEOUT: float = float(os.getenv("FIRST_TOKEN_TIMEOUT", "15"))
+FIRST_TOKEN_TIMEOUT: float = float(os.getenv("FIRST_TOKEN_TIMEOUT", "45"))
 
 # Read timeout for streaming responses (in seconds).
 # This is the maximum time to wait for data between chunks during streaming.

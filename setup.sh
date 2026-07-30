@@ -184,6 +184,35 @@ settings.setdefault('env', {}).update({
     'CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY': '1',
 })
 
+# Legacy setups pinned ANTHROPIC_MODEL="claude-opus-4.7", which (a) is now
+# hardcoded by Claude Code to render as the retired "Claude Opus 4" (with a
+# deprecation warning) and (b) overrides any /model choice on every restart
+# since env-var precedence beats the persisted model setting. Drop it if
+# present so the top-level "model" key below can actually stick.
+settings.get('env', {}).pop('ANTHROPIC_MODEL', None)
+
+# Default initial model = Kiro's server-side "auto" router. The alias key is
+# prefixed with "claude-" because Claude Code's gateway model discovery
+# hard-drops any /v1/models entry whose id doesn't start with claude/anthropic
+# — the value forwarded to Kiro is still the bare "auto".
+#
+# Idempotency contract with the /update-kiro-models skill: the display key
+# "claude-auto · 1x" is treated as stable (auto is always 1x by definition, so
+# a model-list refresh will never rewrite this specific alias). If the skill
+# ever renames it, it must run this same reset. We DO detect and heal two
+# common broken states below rather than silently leave the user stuck:
+DEFAULT_MODEL = 'claude-auto · 1x'
+current = settings.get('model')
+if current is None:
+    settings['model'] = DEFAULT_MODEL
+elif '·' not in current and (current.startswith('claude-') or current.startswith('anthropic')):
+    # Bare model id (e.g. "claude-opus-4.7") — almost always a leftover from the
+    # old ANTHROPIC_MODEL env-var pattern we dropped above. Reset to the router
+    # so the user doesn't restart into the retired-Opus-4 label.
+    settings['model'] = DEFAULT_MODEL
+# Anything else (a real "claude-<name> · <rate>x · <ctx>" alias the user has
+# actively chosen via /model) is left alone.
+
 with open(path, 'w') as f:
     json.dump(settings, f, indent=2)
     f.write('\n')
