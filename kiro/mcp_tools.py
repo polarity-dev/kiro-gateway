@@ -126,6 +126,9 @@ async def call_kiro_mcp_api(
     tool_use_id = f"srvtoolu_{uuid.uuid4().hex[:32]}"
     
     # Build MCP request
+    from kiro.config import PROFILE_ARN
+    profile_arn = getattr(auth_manager, 'profile_arn', None) or PROFILE_ARN or ""
+
     mcp_request = {
         "id": request_id,
         "jsonrpc": "2.0",
@@ -133,7 +136,8 @@ async def call_kiro_mcp_api(
         "params": {
             "name": "web_search",
             "arguments": {"query": query}
-        }
+        },
+        "profileArn": profile_arn
     }
     
     # Log MCP request
@@ -146,13 +150,12 @@ async def call_kiro_mcp_api(
     
     try:
         token = await auth_manager.get_access_token()
-        
-        # EXACT headers from architecture
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "x-amzn-codewhisperer-optout": "false",
-            "Content-Type": "application/json"
-        }
+
+        # Reuse same headers as normal Kiro API calls, override Content-Type for MCP
+        from kiro.utils import get_kiro_headers
+        headers = get_kiro_headers(auth_manager, token)
+        headers["Content-Type"] = "application/json"
+        headers.pop("x-amz-target", None)  # not needed for MCP endpoint
         
         mcp_url = f"{auth_manager.q_host}/mcp"
         logger.debug(f"Calling MCP API: {mcp_url}")
@@ -161,7 +164,7 @@ async def call_kiro_mcp_api(
             response = await client.post(mcp_url, json=mcp_request, headers=headers)
             
             if response.status_code != 200:
-                logger.error(f"MCP API error: {response.status_code}")
+                logger.error(f"MCP API error: {response.status_code} - body: {response.text[:500]}")
                 return None, None
             
             mcp_response = response.json()
