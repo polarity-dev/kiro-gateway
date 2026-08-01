@@ -23,8 +23,13 @@ Color coding: default → normal, orange → 80%+ used, red → 100%+ (overage).
 ## Install
 
 ```bash
-cd kiro-gateway
-.kiro/skills/kiro-credits/swiftbar/install.sh
+scripts/swiftbar/install.sh
+```
+
+Or non-interactively:
+
+```bash
+scripts/swiftbar/install.sh -y
 ```
 
 The installer:
@@ -33,7 +38,7 @@ The installer:
 3. Symlinks the widget into it
 4. Optionally adds SwiftBar to login items
 
-Pass `-y` for unattended install.
+It's also offered as an optional step during `./setup.sh`.
 
 ## Prerequisites
 
@@ -44,13 +49,13 @@ Pass `-y` for unattended install.
 ## How it works
 
 The plugin is a symlink back into the repo. It resolves its own location
-(following the symlink), finds the repo root, and runs `check.py` using the
-repo's `.venv/bin/python`. No hardcoded paths — works from any clone location.
+(following the symlink), finds the repo root, and runs
+`.kiro/skills/kiro-credits/check.py` using the repo's `.venv/bin/python`.
+No hardcoded paths — works from any clone location.
 
 ## Uninstall
 
 ```bash
-# Remove the symlink from your SwiftBar plugins folder
 rm "$(defaults read com.ameba.SwiftBar PluginDirectory)/kiro-credits.60s.sh"
 ```
 

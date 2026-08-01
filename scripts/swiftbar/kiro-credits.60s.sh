@@ -5,15 +5,15 @@
 # <bitbar.dependencies>python3,kiro-gateway venv</bitbar.dependencies>
 #
 # SwiftBar plugin: Kiro credits usage (refreshes every 60s per filename).
-# Lives in the repo at .kiro/skills/kiro-credits/swiftbar/kiro-credits.60s.sh
-# and gets symlinked into the user's SwiftBar plugin folder by install.sh.
+# Lives in the repo at scripts/swiftbar/kiro-credits.60s.sh and gets
+# symlinked into the user's SwiftBar plugin folder by install.sh.
 
 set -euo pipefail
 
 # --- Resolve repo root from this script's real location (follows symlinks) ---
 SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || realpath "${BASH_SOURCE[0]}")"
-# Script lives at <repo>/.kiro/skills/kiro-credits/swiftbar/kiro-credits.60s.sh
-REPO_ROOT="$(cd "$(dirname "$SCRIPT_PATH")/../../../.." && pwd)"
+# Script lives at <repo>/scripts/swiftbar/kiro-credits.60s.sh
+REPO_ROOT="$(cd "$(dirname "$SCRIPT_PATH")/../.." && pwd)"
 
 PYTHON="$REPO_ROOT/.venv/bin/python"
 CHECK_SCRIPT="$REPO_ROOT/.kiro/skills/kiro-credits/check.py"

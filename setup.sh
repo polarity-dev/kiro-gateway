@@ -264,6 +264,24 @@ PY
 esac
 
 # ---------------------------------------------------------------------------
+# Optional: SwiftBar menu bar widget (macOS only)
+if [ "$(uname)" = "Darwin" ] && [ -f "$REPO_DIR/scripts/swiftbar/install.sh" ]; then
+  printf '\n'
+  step "Optional: Menu bar credit widget"
+  info "Show live Kiro credits in your macOS menu bar (⚡️used/cap, refreshes every 60s)."
+  info "Requires SwiftBar (free, open source)."
+  if ask "Install the SwiftBar menu bar widget?"; then
+    if [ "$ASSUME_YES" -eq 1 ]; then
+      bash "$REPO_DIR/scripts/swiftbar/install.sh" -y
+    else
+      bash "$REPO_DIR/scripts/swiftbar/install.sh"
+    fi
+  else
+    info "Skipped. You can install it later: scripts/swiftbar/install.sh"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 cat <<EOF
 
 $(printf '\033[1mSetup complete.\033[0m')
