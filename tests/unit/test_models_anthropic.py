@@ -22,6 +22,9 @@ from kiro.models_anthropic import (
     ToolUseContentBlock,
     ToolResultContentBlock,
     ToolReferenceContentBlock,
+    ServerToolUseContentBlock,
+    WebSearchResultBlock,
+    WebSearchToolResultContentBlock,
     # Image models
     Base64ImageSource,
     URLImageSource,
@@ -1052,6 +1055,146 @@ class TestToolReferenceContentBlock:
 
         print(f"Comparing type: Expected 'tool_reference', Got '{block.type}'")
         assert block.type == "tool_reference"
+
+
+# ==================================================================================================
+# Tests for server-side tool content blocks (web_search MCP emulation)
+# ==================================================================================================
+
+class TestServerToolContentBlocks:
+    """
+    Tests for ServerToolUseContentBlock / WebSearchToolResultContentBlock.
+
+    These blocks are emitted by our own web_search emulation. The client stores them
+    in the conversation history and echoes them back on the next request, so they must
+    validate on input as well — otherwise every turn following a web search fails with 422.
+    """
+
+    def test_valid_server_tool_use_block(self):
+        """
+        What it does: Verifies creation of a valid ServerToolUseContentBlock.
+        Purpose: Ensure the block we emit for web_search calls validates on input.
+        """
+        print("Setup: Creating ServerToolUseContentBlock with valid data...")
+        block = ServerToolUseContentBlock(
+            id="srvtoolu_afad8cd0d6e34b948b9aaa9c3af9c04d",
+            name="web_search",
+            input={"query": "test query"},
+        )
+
+        print(f"Comparing type: Expected 'server_tool_use', Got '{block.type}'")
+        assert block.type == "server_tool_use"
+
+        print(f"Comparing name: Got '{block.name}'")
+        assert block.name == "web_search"
+        assert block.input == {"query": "test query"}
+
+    def test_valid_web_search_tool_result_block(self):
+        """
+        What it does: Verifies a web_search_tool_result block with nested results validates.
+        Purpose: Ensure the search results list is accepted, including page_age=None.
+        """
+        print("Setup: Creating WebSearchToolResultContentBlock with nested results...")
+        block = WebSearchToolResultContentBlock(
+            tool_use_id="srvtoolu_afad8cd0d6e34b948b9aaa9c3af9c04d",
+            content=[
+                {
+                    "type": "web_search_result",
+                    "title": "The AI Agent Platform for Retail Operations",
+                    "url": "https://commerceclarity.com/",
+                    "encrypted_content": "Built on CommerceClarity.",
+                    "page_age": None,
+                }
+            ],
+        )
+
+        print(f"Comparing type: Expected 'web_search_tool_result', Got '{block.type}'")
+        assert block.type == "web_search_tool_result"
+
+        print(f"Comparing nested result count: Expected 1, Got {len(block.content)}")
+        assert len(block.content) == 1
+        assert isinstance(block.content[0], WebSearchResultBlock)
+        assert block.content[0].page_age is None
+
+    def test_web_search_tool_result_accepts_error_object(self):
+        """
+        What it does: Verifies an error payload is accepted as content.
+        Purpose: A failed search returns an error object, not a results list.
+        """
+        print("Setup: Creating WebSearchToolResultContentBlock with an error object...")
+        block = WebSearchToolResultContentBlock(
+            tool_use_id="srvtoolu_abc123",
+            content={
+                "type": "web_search_tool_result_error",
+                "error_code": "max_uses_exceeded",
+            },
+        )
+
+        print(f"Comparing content type: Got '{type(block.content).__name__}'")
+        assert isinstance(block.content, dict)
+        assert block.content["error_code"] == "max_uses_exceeded"
+
+    def test_assistant_message_with_web_search_history(self):
+        """
+        What it does: Verifies an assistant message replaying a full web search validates.
+        Purpose: Regression test for the 422 on the turn after a web search — the gateway
+                 emitted server_tool_use + web_search_tool_result but could not read them back.
+        """
+        print("Setup: Building assistant message in the exact shape the client echoes back...")
+        message = AnthropicMessage(
+            role="assistant",
+            content=[
+                {"type": "text", "text": "Un ultimo controllo."},
+                {
+                    "type": "server_tool_use",
+                    "id": "srvtoolu_afad8cd0d6e34b948b9aaa9c3af9c04d",
+                    "name": "web_search",
+                    "input": {"query": "CommerceClarity"},
+                },
+                {
+                    "type": "web_search_tool_result",
+                    "tool_use_id": "srvtoolu_afad8cd0d6e34b948b9aaa9c3af9c04d",
+                    "content": [
+                        {
+                            "type": "web_search_result",
+                            "title": "The AI Agent Platform for Retail Operations",
+                            "url": "https://commerceclarity.com/",
+                            "encrypted_content": "Built on CommerceClarity.",
+                            "page_age": None,
+                        }
+                    ],
+                },
+                {"type": "text", "text": "\n<web_search>\nSearch results...\n</web_search>\n"},
+            ],
+        )
+
+        print(f"Comparing block count: Expected 4, Got {len(message.content)}")
+        assert len(message.content) == 4
+
+        types = [block.type for block in message.content]
+        print(f"Comparing block types: Got {types}")
+        assert types == ["text", "server_tool_use", "web_search_tool_result", "text"]
+
+        print("Comparing discriminated types: each block must keep its own model...")
+        assert isinstance(message.content[1], ServerToolUseContentBlock)
+        assert isinstance(message.content[2], WebSearchToolResultContentBlock)
+
+    def test_content_block_union_accepts_server_tool_blocks(self):
+        """
+        What it does: Verifies the ContentBlock union accepts both server-side blocks.
+        Purpose: Ensure the union covers everything the gateway itself emits.
+        """
+        print("Setup: Creating server-side blocks as ContentBlock...")
+        use_block: ContentBlock = ServerToolUseContentBlock(
+            id="srvtoolu_x", name="web_search", input={}
+        )
+        result_block: ContentBlock = WebSearchToolResultContentBlock(
+            tool_use_id="srvtoolu_x", content=[]
+        )
+
+        print(f"Comparing types: Got '{use_block.type}', '{result_block.type}'")
+        assert use_block.type == "server_tool_use"
+        assert result_block.type == "web_search_tool_result"
 
 
 # ==================================================================================================

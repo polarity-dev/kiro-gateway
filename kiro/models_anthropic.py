@@ -111,6 +111,67 @@ class ToolResultContentBlock(BaseModel):
 
 
 # ==================================================================================================
+# Server-Side Tool Content Block Models
+# ==================================================================================================
+
+
+class ServerToolUseContentBlock(BaseModel):
+    """
+    Server-side tool use content block in Anthropic format.
+
+    Emitted by our own web_search MCP emulation (see kiro/mcp_tools.py and
+    kiro/streaming_anthropic.py). The client stores it in the conversation history
+    and echoes it back on the next request, so it must validate on input too.
+
+    Attributes:
+        type: Always "server_tool_use"
+        id: Server tool use identifier (e.g. "srvtoolu_...")
+        name: Server tool name (e.g. "web_search")
+        input: Tool input parameters
+    """
+
+    type: Literal["server_tool_use"] = "server_tool_use"
+    id: str
+    name: str
+    input: Dict[str, Any] = Field(default_factory=dict)
+
+    model_config = {"extra": "allow"}
+
+
+class WebSearchResultBlock(BaseModel):
+    """
+    Single search result nested inside a web_search_tool_result block.
+
+    Fields are deliberately permissive: these blocks are echoed back by the client and
+    dropped when building the Kiro payload, so rejecting an unexpected null here would
+    only cost a 422 that breaks the session without protecting anything downstream.
+    """
+
+    type: Literal["web_search_result"] = "web_search_result"
+    title: Optional[str] = None
+    url: Optional[str] = None
+    encrypted_content: Optional[str] = None
+    page_age: Any = None
+
+    model_config = {"extra": "allow"}
+
+
+class WebSearchToolResultContentBlock(BaseModel):
+    """
+    Result of a server-side web_search call, echoed back by the client.
+
+    content is a list of results on success, or an error object
+    ({"type": "web_search_tool_result_error", "error_code": ...}) on failure.
+    """
+
+    type: Literal["web_search_tool_result"] = "web_search_tool_result"
+    tool_use_id: str
+    content: Union[str, List[WebSearchResultBlock], Dict[str, Any], None] = None
+
+    model_config = {"extra": "allow"}
+
+
+# ==================================================================================================
 # Image Content Block Models
 # ==================================================================================================
 
@@ -170,6 +231,8 @@ ContentBlock = Union[
     ToolUseContentBlock,
     ToolResultContentBlock,
     ToolReferenceContentBlock,
+    ServerToolUseContentBlock,
+    WebSearchToolResultContentBlock,
 ]
 
 
