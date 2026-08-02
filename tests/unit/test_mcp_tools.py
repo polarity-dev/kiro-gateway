@@ -180,6 +180,70 @@ class TestCallKiroMCPAPI:
         assert results is None
     
     @pytest.mark.asyncio
+    async def test_mcp_api_no_results_is_not_an_error(self, mock_auth_manager):
+        """
+        What it does: Verifies "no results" is returned as an empty result set, not a failure.
+        Purpose: Upstream reports zero matches as a JSON-RPC error. Treating that as a
+                 failure turned a legitimate empty search into an HTTP 500 for the client.
+        """
+        print("Setup: Mocking MCP API 'Tool returned no results' response...")
+        query = "site:polarity.dev"
+
+        mock_response_data = {
+            "id": "web_search_tooluse_abc123_1234567890_xyz",
+            "jsonrpc": "2.0",
+            "error": {"code": -32602, "data": None, "message": "Tool returned no results"}
+        }
+
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json = Mock(return_value=mock_response_data)
+
+        mock_post = AsyncMock(return_value=mock_response)
+        mock_client = AsyncMock()
+        mock_client.__aenter__.return_value.post = mock_post
+
+        print("Action: Calling call_kiro_mcp_api...")
+        with patch("kiro.mcp_tools.httpx.AsyncClient", return_value=mock_client):
+            tool_use_id, results = await call_kiro_mcp_api(query, mock_auth_manager)
+
+        print(f"Comparing result: Expected a tool_use_id and empty results, Got ({tool_use_id}, {results})")
+        assert tool_use_id is not None
+        assert results == {"results": [], "totalResults": 0, "query": query}
+
+    @pytest.mark.asyncio
+    async def test_mcp_api_invalid_params_still_fails(self, mock_auth_manager):
+        """
+        What it does: Verifies a genuine -32602 invalid-params error is still a failure.
+        Purpose: The no-results carve-out matches on the message, so it must not swallow
+                 other errors that happen to share the -32602 code.
+        """
+        print("Setup: Mocking MCP API invalid-params response sharing code -32602...")
+        query = "test"
+
+        mock_response_data = {
+            "id": "web_search_tooluse_abc123_1234567890_xyz",
+            "jsonrpc": "2.0",
+            "error": {"code": -32602, "data": None, "message": "Invalid params: missing query"}
+        }
+
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json = Mock(return_value=mock_response_data)
+
+        mock_post = AsyncMock(return_value=mock_response)
+        mock_client = AsyncMock()
+        mock_client.__aenter__.return_value.post = mock_post
+
+        print("Action: Calling call_kiro_mcp_api...")
+        with patch("kiro.mcp_tools.httpx.AsyncClient", return_value=mock_client):
+            tool_use_id, results = await call_kiro_mcp_api(query, mock_auth_manager)
+
+        print(f"Comparing result: Expected (None, None), Got ({tool_use_id}, {results})")
+        assert tool_use_id is None
+        assert results is None
+
+    @pytest.mark.asyncio
     async def test_mcp_api_http_error(self, mock_auth_manager):
         """
         What it does: Verifies handling of HTTP errors from MCP API.
@@ -324,8 +388,10 @@ class TestGenerateSearchSummary:
         assert "nonexistent" in summary
         
         print(f"Summary content: {repr(summary)}")
-        # Empty results list produces empty content between tags (no "No results found")
         assert "Search results for" in summary
+
+        print(f"Checking for 'No results found'...")
+        assert "No results found" in summary
     
     def test_generate_summary_malformed_results(self):
         """

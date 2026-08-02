@@ -181,7 +181,18 @@ async def call_kiro_mcp_api(
             # logger.debug(f"MCP API full response: {json.dumps(mcp_response, ensure_ascii=False)}")
             
             if "error" in mcp_response and mcp_response["error"] is not None:
-                logger.error(f"MCP API returned error: {mcp_response['error']}")
+                error = mcp_response["error"]
+                message = error.get("message", "") if isinstance(error, dict) else str(error)
+
+                # Upstream reports "no results" as a JSON-RPC error, but an empty result
+                # set is a valid answer, not a failure. Match on the message rather than
+                # the code (-32602 is also the generic "invalid params") so real param
+                # errors still surface as failures.
+                if "no results" in str(message).lower():
+                    logger.info(f"MCP API returned no results for query: {query}")
+                    return tool_use_id, {"results": [], "totalResults": 0, "query": query}
+
+                logger.error(f"MCP API returned error: {error}")
                 return None, None
             
             # Parse results: result.content[0].text is JSON STRING (CRITICAL!)
@@ -237,7 +248,9 @@ def generate_search_summary(query: str, results: Dict) -> str:
     # Start with opening tag
     summary = f'\n<web_search>\nSearch results for "{query}":\n\n'
     
-    if results and "results" in results:
+    # An empty list must fall through to "No results found" - a silently empty
+    # <web_search> block leaves the model with nothing to react to.
+    if results and results.get("results"):
         for i, result in enumerate(results["results"], 1):
             title = result.get("title", "Untitled")
             url = result.get("url", "")
