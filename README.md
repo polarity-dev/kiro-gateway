@@ -45,9 +45,8 @@ If you have **Kiro IDE** or another AI coding assistant open in this repo, ask:
 > *"Set up kiro-gateway and Claude Code for me."*
 
 In Claude Code you can also run **`/setup-gateway`**. The setup uses the current
-repository directory automatically; there is no checkout-selection step. Clone
-or open the repo, run the skill, and it keeps setup, gateway startup, and
-verification in that same directory.
+repository directory automatically and keeps setup, gateway startup, and
+verification there. It uses another path only when you explicitly name one.
 
 When safe event streaming is available, the agent runs one long-lived process:
 
@@ -129,9 +128,9 @@ through safe event monitoring. Without it, use a visible foreground shell
 **Repeated `401 Invalid API key` from the local gateway** — setup and the running
 gateway may be using different checkouts, each with its own `.env` proxy key.
 This is a local Claude-to-gateway mismatch, not an expired IAM Identity Center
-token. Stop the gateway, return to the checkout selected at the start, rerun
-setup/alignment there, restart from that same path, and open a new Claude Code
-session. **Do not delete `kiro-gateway-auth.json`** to fix a local 401.
+token. Stop the gateway, return to the repository directory where setup was
+run, rerun setup/alignment there, restart from that same path, and open a new
+Claude Code session. **Do not delete `kiro-gateway-auth.json`** to fix a local 401.
 
 **Browser does not open** — rerun with `--no-browser`, open the printed URL, and
 approve only if its code exactly matches the terminal `Code:`.
@@ -179,7 +178,7 @@ the same value for the server runtime and Claude Code's `ANTHROPIC_BASE_URL`.
 For a first setup on a custom port:
 
 ```bash
-./setup.sh --port 9000
+./setup.sh -y --aws-profile NAME --port 9000
 ```
 
 To change the port after setup is already complete:

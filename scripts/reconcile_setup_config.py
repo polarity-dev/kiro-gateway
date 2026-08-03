@@ -33,7 +33,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--api-region", required=True)
     parser.add_argument("--profile-arn", required=True)
     parser.add_argument("--port", required=True)
-    parser.add_argument("--multi-account", action="store_true")
     parser.add_argument(
         "--proxy-key-env",
         default="KIRO_GATEWAY_SETUP_TOKEN",
@@ -75,7 +74,7 @@ def main(argv: list[str] | None = None) -> int:
         account_id = reconcile_selected_json_account(
             args.accounts,
             args.credential,
-            multi_account=args.multi_account or configured_multi_account,
+            multi_account=configured_multi_account,
             profile_arn=args.profile_arn,
             api_region=args.api_region,
         )

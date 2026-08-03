@@ -35,12 +35,12 @@ as you go — the user may not know the internals.
 
 **Use the current repository directory.** When the user asks to set up the
 repo without naming another path, run the entire flow from the agent/session's
-current gateway checkout—do not ask them to choose one. Setup, gateway startup,
-port checks, and troubleshooting must keep using that same working directory.
-Only change directories when the user explicitly names a different checkout.
-For diagnostics, `git rev-parse --show-toplevel` identifies the current checkout.
-A linked worktree has its own ignored `.env`, `credentials.json`, and `state.json`,
-so never switch checkout implicitly during a setup already in progress.
+current working directory. Setup, gateway startup, port checks, and
+troubleshooting must keep using that same directory. Only change directories
+when the user explicitly names a different path. For diagnostics,
+`git rev-parse --show-toplevel` identifies the repository root. A linked worktree
+has its own ignored `.env`, `credentials.json`, and `state.json`, so never switch
+working directories implicitly during a setup already in progress.
 
 Agents may run the read-only prechecks. For IAM Identity Center authorization,
 prefer the dedicated `--agent-events` stream through `Monitor`: it exposes only

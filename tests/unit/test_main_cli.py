@@ -131,6 +131,15 @@ class TestParseCliArgs:
         assert args.host == "127.0.0.1"
         assert args.port == 5000
 
+    def test_no_interactive_reauth_opt_out(self):
+        """The supported startup reauthentication control is an explicit opt-out."""
+        from main import parse_cli_args
+
+        with patch.object(sys, "argv", ["main.py", "--no-interactive-reauth"]):
+            args = parse_cli_args()
+
+        assert args.no_interactive_reauth is True
+
 
 class TestGatewayAuthPreflight:
     """Startup auth refreshes silently and reauthenticates only when eligible."""
@@ -146,7 +155,7 @@ class TestGatewayAuthPreflight:
         auth = MagicMock(_is_direct_idc=True, _sqlite_db=None)
         auth.get_access_token = AsyncMock(return_value="access")
         args = argparse.Namespace(
-            no_interactive_reauth=False, interactive_reauth=False,
+            no_interactive_reauth=False,
             agent_events=False, no_browser=False,
         )
         monkeypatch.setattr("main.KIRO_CREDS_FILE", str(credential))
@@ -177,7 +186,7 @@ class TestGatewayAuthPreflight:
         fresh = MagicMock(_is_direct_idc=True, _sqlite_db=None)
         fresh.get_access_token = AsyncMock(return_value="new-access")
         args = argparse.Namespace(
-            no_interactive_reauth=False, interactive_reauth=False,
+            no_interactive_reauth=False,
             agent_events=False, no_browser=True,
         )
         monkeypatch.setattr("main.KIRO_CREDS_FILE", str(credential))
@@ -209,7 +218,7 @@ class TestGatewayAuthPreflight:
             )
         )
         args = argparse.Namespace(
-            no_interactive_reauth=True, interactive_reauth=False,
+            no_interactive_reauth=True,
             agent_events=False, no_browser=False,
         )
         monkeypatch.setattr("main.KIRO_CREDS_FILE", str(credential))

@@ -728,13 +728,7 @@ Examples:
         help=f"Server port (default: {DEFAULT_SERVER_PORT}, env: SERVER_PORT)"
     )
     
-    reauth = parser.add_mutually_exclusive_group()
-    reauth.add_argument(
-        "--interactive-reauth",
-        action="store_true",
-        help="Allow one local IAM Identity Center device login when refresh is unrecoverable",
-    )
-    reauth.add_argument(
+    parser.add_argument(
         "--no-interactive-reauth",
         action="store_true",
         help="Never open an IAM Identity Center device login during gateway startup",

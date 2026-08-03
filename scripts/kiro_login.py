@@ -7,11 +7,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import sys
-import webbrowser
 from pathlib import Path
-from typing import Callable, Optional, Sequence
+from typing import Optional, Sequence
 
 import httpx
 
@@ -27,7 +25,7 @@ from kiro.idc_bootstrap import (  # noqa: E402
 from kiro.idc_login import (  # noqa: E402
     IdcLoginEvent,
     IdcLoginResult,
-    build_event_sink as build_shared_event_sink,
+    build_event_sink,
     emit_agent_event,
     run_idc_login,
 )
@@ -86,12 +84,6 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def emit_agent_event(event: IdcLoginEvent, *, scope: str = "login") -> None:
-    """Emit one allowlisted machine-readable event and flush it immediately."""
-    payload = {"event": "KIRO_EVENT", "scope": scope, **event.payload()}
-    print(json.dumps(payload, separators=(",", ":"), sort_keys=True), flush=True)
-
-
 def _safe_failure_category(exc: BaseException) -> str:
     """Map failures to stable categories without exposing provider content."""
     if isinstance(exc, DeviceAuthorizationError):
@@ -112,61 +104,6 @@ def _safe_failure_category(exc: BaseException) -> str:
     return "unexpected"
 
 
-def _browser_opener(
-    event: IdcLoginEvent,
-    *,
-    no_browser: bool,
-    agent_events: bool,
-) -> None:
-    """Render authorization instructions and optionally open the browser."""
-    if event.name == "authorization_required":
-        if agent_events:
-            emit_agent_event(event)
-        else:
-            browser_instruction = (
-                "Open the URL above in your browser."
-                if no_browser
-                else "The browser will open after these instructions are visible."
-            )
-            print(
-                "\nAWS IAM Identity Center authorization required:\n"
-                f"  Code: {event.code}\n"
-                f"  URL:  {event.url}\n\n"
-                "Approve only if the browser code matches the Code above exactly.\n"
-                "If it differs, is missing, or the request is unexpected, cancel and rerun setup.\n"
-                f"{browser_instruction}\n"
-                f"The code expires in {event.expires_in} seconds. "
-                "Waiting for approval; press Ctrl+C to cancel.\n",
-                flush=True,
-            )
-
-        if no_browser:
-            return
-        try:
-            opened = webbrowser.open(event.url or "")
-        except (webbrowser.Error, OSError):
-            opened = False
-        if not opened and not agent_events:
-            print(
-                "The browser could not be opened automatically; open the URL above "
-                "and confirm the exact Code shown.",
-                flush=True,
-            )
-        return
-
-    if event.name == "waiting" and agent_events:
-        emit_agent_event(event)
-
-
-def build_event_sink(args: argparse.Namespace) -> Callable[[IdcLoginEvent], None]:
-    """Build the renderer/browser callback for one login invocation."""
-    return lambda event: _browser_opener(
-        event,
-        no_browser=getattr(args, "no_browser", False),
-        agent_events=getattr(args, "agent_events", False),
-    )
-
-
 async def login(
     args: argparse.Namespace,
     *,
@@ -179,7 +116,10 @@ async def login(
         q_profile=args.q_profile,
         output=args.output,
         force=getattr(args, "force", False),
-        event_sink=build_event_sink(args),
+        event_sink=build_event_sink(
+            agent_events=getattr(args, "agent_events", False),
+            no_browser=getattr(args, "no_browser", False),
+        ),
         client=client,
     )
     if not getattr(args, "agent_events", False):

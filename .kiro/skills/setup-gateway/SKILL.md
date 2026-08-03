@@ -18,8 +18,8 @@ improvise a different flow.
 
 0. **Use the current repo and check preconditions.** Unless the user explicitly
    names another path, run setup, startup, and verification in the current
-   gateway checkout; do not ask them to choose a checkout. Then verify
-   macOS/Linux, Python 3.10+, an AWS shared-config profile containing IAM Identity
+   repository directory. Then verify macOS/Linux, Python 3.10+, an AWS
+   shared-config profile containing IAM Identity
    Center `sso_start_url` and `sso_region`, and an assigned Amazon Q Developer
    subscription/profile.
 1. **Claude Code.** `claude --version`; if missing,

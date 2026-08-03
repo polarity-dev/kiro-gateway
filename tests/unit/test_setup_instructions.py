@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 
-"""Regression tests for unambiguous setup checkout instructions."""
+"""Regression tests for unambiguous setup-directory instructions."""
 
 from pathlib import Path
 
@@ -12,15 +12,15 @@ def _read(path: str) -> str:
     return (REPO_ROOT / path).read_text(encoding="utf-8")
 
 
-def test_canonical_runbook_uses_current_repo_automatically() -> None:
-    """Normal setup uses the current repo without a checkout-selection step."""
+def test_canonical_runbook_keeps_the_entire_flow_in_the_current_repo() -> None:
+    """Normal setup uses one working directory unless another is explicitly named."""
     runbook = _read(".kiro/steering/setup.md")
 
     assert "Use the current repository directory" in runbook
-    assert "do not ask them to choose one" in runbook
-    assert "Only change directories when the user explicitly names" in runbook
-    assert "Choose one checkout before doing anything" not in runbook
-    assert "Using gateway checkout:" not in runbook
+    assert "Setup, gateway startup, port checks, and" in runbook
+    assert "troubleshooting must keep using that same directory" in runbook
+    assert "Only change directories" in runbook
+    assert "explicitly names a different path" in runbook
 
 
 def test_skill_runs_every_step_in_current_repo() -> None:
@@ -28,7 +28,7 @@ def test_skill_runs_every_step_in_current_repo() -> None:
     skill = _read(".kiro/skills/setup-gateway/SKILL.md")
 
     assert "run setup, startup, and verification in the current" in skill
-    assert "do not ask them to choose a checkout" in skill
+    assert "repository directory" in skill
     assert "./setup.sh -y --aws-profile NAME --agent-events" in skill
     assert "python3 main.py" in skill
     assert "./setup.sh --check-port" in skill
@@ -42,16 +42,18 @@ def test_local_401_guidance_preserves_idc_credentials() -> None:
 
     assert "Repeated `401 Invalid API key`" in readme
     assert "not an expired IAM Identity Center" in readme
-    assert "token" in readme
+    assert "return to the repository directory where setup was" in readme
+    assert "run, rerun setup/alignment there" in readme
     assert "Do not delete `kiro-gateway-auth.json`" in readme
     assert "do not delete IdC credentials" in runbook
 
 
-def test_readme_has_no_checkout_selection_step() -> None:
-    """The common clone-and-setup path remains direct and automatic."""
+def test_readme_documents_automatic_directory_and_complete_custom_port_setup() -> None:
+    """The common path remains automatic and the custom-port example is complete."""
     readme = _read("README.md")
 
     assert "uses the current" in readme
     assert "repository directory automatically" in readme
-    assert "there is no checkout-selection step" in readme
+    assert "It uses another path only when you explicitly name one" in readme
+    assert "./setup.sh -y --aws-profile NAME --port 9000" in readme
     assert "REPO_DIR=" not in readme

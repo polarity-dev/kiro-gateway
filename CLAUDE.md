@@ -19,9 +19,9 @@ symlink).
 (Kiro loads the runbook automatically as always-on steering. Claude Code and
 other tools should open and follow it when the task is setup-related.)
 
-The short version: unless the user names another path, use the current gateway
-checkout automatically—do not ask them to choose one. Run setup,
-`python3 main.py`, and verification from that same working directory. Prefer
+The short version: unless the user names another path, use the current
+repository directory automatically. Run setup, `python3 main.py`, and
+verification from that same working directory. Prefer
 `Monitor` over `./setup.sh -y --aws-profile NAME --agent-events`; if unavailable,
 hand `! ./setup.sh -y --aws-profile NAME` to the user. Approve only an exact code
 match. Full rules are in the runbook.

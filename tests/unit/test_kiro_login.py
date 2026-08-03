@@ -14,6 +14,7 @@ from pathlib import Path
 import httpx
 import pytest
 
+from kiro import idc_login
 from kiro.idc_bootstrap import IdcBootstrapError, OidcToken, SsoOidcDeviceClient
 from scripts import kiro_login
 from scripts.kiro_login import login
@@ -203,7 +204,7 @@ async def test_login_flushes_exact_approval_details_before_browser_and_polling(
         events.append("poll")
         return OidcToken("access-token", "refresh-token", 3600)
 
-    monkeypatch.setattr(kiro_login.webbrowser, "open", open_browser)
+    monkeypatch.setattr(idc_login.webbrowser, "open", open_browser)
     monkeypatch.setattr(SsoOidcDeviceClient, "poll_for_token", token_result)
 
     await login(_login_args(tmp_path, no_browser=False), client=StubAsyncClient())
@@ -234,7 +235,7 @@ async def test_no_browser_flushes_instructions_before_polling(
         events.append("poll")
         return OidcToken("access-token", "refresh-token", 3600)
 
-    monkeypatch.setattr(kiro_login.webbrowser, "open", unexpected_browser)
+    monkeypatch.setattr(idc_login.webbrowser, "open", unexpected_browser)
     monkeypatch.setattr(SsoOidcDeviceClient, "poll_for_token", token_result)
 
     await login(_login_args(tmp_path, no_browser=True), client=StubAsyncClient())
@@ -250,7 +251,7 @@ async def test_browser_open_failure_prints_and_flushes_manual_fallback(
     events: list[str] = []
     stdout = TrackingStdout(events)
     monkeypatch.setattr(sys, "stdout", stdout)
-    monkeypatch.setattr(kiro_login.webbrowser, "open", lambda url: False)
+    monkeypatch.setattr(idc_login.webbrowser, "open", lambda url: False)
 
     async def token_result(self, registration, authorization):
         assert events == ["flush", "flush"]
@@ -271,12 +272,12 @@ async def test_browser_open_exception_uses_manual_fallback(
 ) -> None:
     """A browser-controller exception does not discard the active device code."""
     def fail_to_open(url: str) -> bool:
-        raise kiro_login.webbrowser.Error("no browser controller")
+        raise idc_login.webbrowser.Error("no browser controller")
 
     async def token_result(self, registration, authorization):
         return OidcToken("access-token", "refresh-token", 3600)
 
-    monkeypatch.setattr(kiro_login.webbrowser, "open", fail_to_open)
+    monkeypatch.setattr(idc_login.webbrowser, "open", fail_to_open)
     monkeypatch.setattr(SsoOidcDeviceClient, "poll_for_token", token_result)
 
     await login(_login_args(tmp_path, no_browser=False), client=StubAsyncClient())
