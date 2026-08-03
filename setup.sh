@@ -177,14 +177,6 @@ EOF
   exit 0
 fi
 
-if [ ! -f "$ENV_FILE" ] && [ "$PORT_REQUESTED" -eq 0 ] && [ "$ASSUME_YES" -eq 0 ]; then
-  printf '  Gateway port [%s]: ' "$PORT"
-  read -r reply
-  if [ -n "$reply" ]; then
-    PORT=$(python3 "$REPO_DIR/scripts/manage_gateway_port.py" "${PORT_ARGS[@]}" resolve --port "$reply") \
-      || fail "Invalid port: $reply"
-  fi
-fi
 ok "Gateway port: $PORT"
 
 # Confirm all replacements before device login so cancellation leaves both the
@@ -202,7 +194,7 @@ if [ -f "$ENV_FILE" ]; then
   esac
 fi
 
-LOGIN_FORCE_ARGS=()
+LOGIN_ARGS_FORCE=0
 if [ -n "$AWS_PROFILE_NAME" ] && [ -e "$DIRECT_CREDS_FILE" ]; then
   if [ "$ASSUME_YES" -eq 1 ]; then
     reply="y"
@@ -211,7 +203,7 @@ if [ -n "$AWS_PROFILE_NAME" ] && [ -e "$DIRECT_CREDS_FILE" ]; then
     read -r reply
   fi
   case "$reply" in
-    [yY]) LOGIN_FORCE_ARGS+=(--force) ;;
+    [yY]) LOGIN_ARGS_FORCE=1 ;;
     *)    fail "Aborted without changing credentials." ;;
   esac
 fi
@@ -224,7 +216,8 @@ if [ -n "$AWS_PROFILE_NAME" ]; then
   # kiro_login.py completes OIDC and bearer ListAvailableProfiles discovery.
   LOGIN_ARGS=(--aws-profile "$AWS_PROFILE_NAME" --output "$CREDS_FILE")
   [ -z "$Q_PROFILE_SELECTOR" ] || LOGIN_ARGS+=(--q-profile "$Q_PROFILE_SELECTOR")
-  python3 "$REPO_DIR/scripts/kiro_login.py" "${LOGIN_ARGS[@]}" "${LOGIN_FORCE_ARGS[@]}" \
+  [ "$LOGIN_ARGS_FORCE" -eq 0 ] || LOGIN_ARGS+=(--force)
+  python3 "$REPO_DIR/scripts/kiro_login.py" "${LOGIN_ARGS[@]}" \
     || fail "IAM Identity Center login failed. Review the message above and retry."
   ok "Direct IAM Identity Center credentials created"
 else

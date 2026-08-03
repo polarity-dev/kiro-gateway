@@ -21,6 +21,14 @@ def test_setup_resolves_and_persists_one_shared_port() -> None:
     assert "--check-port" in script
 
 
+def test_setup_uses_default_port_without_prompting() -> None:
+    """Setup accepts the resolved default unless --port is supplied."""
+    script = SETUP_SCRIPT.read_text(encoding="utf-8")
+
+    assert "Gateway port [%s]:" not in script
+    assert 'ok "Gateway port: $PORT"' in script
+
+
 def test_setup_prints_port_neutral_shell_helper() -> None:
     """The recommended helper delegates port selection to the checkout dotenv."""
     script = SETUP_SCRIPT.read_text(encoding="utf-8")
@@ -83,7 +91,9 @@ def test_setup_supports_direct_identity_center_login() -> None:
     assert 'CREDS_FILE="$DIRECT_CREDS_FILE"' in script
     assert 'KIRO_CREDS_FILE="$CREDS_FILE"' in script
     assert "ListAvailableProfiles" in script
-    assert 'LOGIN_FORCE_ARGS+=(--force)' in script
+    assert "LOGIN_ARGS_FORCE=1" in script
+    assert 'LOGIN_ARGS+=(--force)' in script
+    assert "LOGIN_FORCE_ARGS" not in script
     assert script.index('.env already exists. Overwrite?') < script.index('scripts/kiro_login.py')
     assert '--q-profile requires --aws-profile' in script
     assert '[[ "$2" != -* ]]' in script
