@@ -5,9 +5,11 @@ Unit tests for the configuration module.
 Verifies loading settings from environment variables.
 """
 
-import pytest
 import os
+from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 
 class TestLogLevelConfig:
@@ -514,211 +516,26 @@ class TestKiroCliDbFileConfig:
             assert str(path) == config_module.KIRO_CLI_DB_FILE
 
 
-class TestFallbackModelsConfig:
-    """Tests for FALLBACK_MODELS configuration."""
-    
-    def test_fallback_models_exists(self):
-        """
-        What it does: Verifies that FALLBACK_MODELS constant exists.
-        Purpose: Ensure the fallback model list is defined in config.
-        """
-        print("Setup: Importing config module...")
-        import importlib
+class TestDynamicModelCatalogConfig:
+    """Ensure model discovery configuration stays dynamic and checkout-local."""
+
+    def test_static_model_catalog_constants_are_absent(self):
+        """Keep model availability exclusively in Kiro discovery and LKG state."""
         import kiro.config as config_module
-        importlib.reload(config_module)
-        
-        print("Verification: FALLBACK_MODELS exists...")
-        assert hasattr(config_module, 'FALLBACK_MODELS')
-        
-        print(f"FALLBACK_MODELS type: {type(config_module.FALLBACK_MODELS)}")
-        assert isinstance(config_module.FALLBACK_MODELS, list)
-    
-    def test_fallback_models_not_empty(self):
-        """
-        What it does: Verifies that FALLBACK_MODELS contains at least one model.
-        Purpose: Ensure fallback list is populated for DNS failure recovery.
-        """
-        print("Setup: Importing FALLBACK_MODELS...")
-        from kiro.config import FALLBACK_MODELS
-        
-        print(f"FALLBACK_MODELS length: {len(FALLBACK_MODELS)}")
-        print(f"Comparing: Expected > 0, Got {len(FALLBACK_MODELS)}")
-        assert len(FALLBACK_MODELS) > 0
-    
-    def test_fallback_models_structure(self):
-        """
-        What it does: Verifies that each fallback model has required modelId field.
-        Purpose: Ensure fallback models have correct structure for cache.update().
-        """
-        print("Setup: Importing FALLBACK_MODELS...")
-        from kiro.config import FALLBACK_MODELS
-        
-        print(f"Action: Checking structure of {len(FALLBACK_MODELS)} models...")
-        for i, model in enumerate(FALLBACK_MODELS):
-            print(f"Checking model {i}: {model}")
-            
-            print(f"  Verification: model is dict...")
-            assert isinstance(model, dict), f"Model {i} is not a dict"
-            
-            print(f"  Verification: model has 'modelId'...")
-            assert "modelId" in model, f"Model {i} missing 'modelId'"
-            
-            print(f"  Verification: modelId is string...")
-            assert isinstance(model["modelId"], str), f"Model {i} modelId is not string"
-            
-            print(f"  Verification: modelId is not empty...")
-            assert len(model["modelId"]) > 0, f"Model {i} modelId is empty"
-    
-    def test_fallback_models_contain_claude_models(self):
-        """
-        What it does: Verifies that fallback models include Claude models.
-        Purpose: Ensure fallback list contains expected Claude 4/4.5 models.
-        """
-        print("Setup: Importing FALLBACK_MODELS...")
-        from kiro.config import FALLBACK_MODELS
-        
-        model_ids = [m["modelId"] for m in FALLBACK_MODELS]
-        print(f"Model IDs in fallback list: {model_ids}")
-        
-        print("Verification: Contains at least one Claude model...")
-        has_claude = any("claude" in mid.lower() for mid in model_ids)
-        assert has_claude, "No Claude models in fallback list"
-    
-    def test_fallback_models_use_dot_format(self):
-        """
-        What it does: Verifies that model IDs use dot format (e.g., claude-4.5).
-        Purpose: Ensure consistency with Kiro API format.
-        """
-        print("Setup: Importing FALLBACK_MODELS...")
-        from kiro.config import FALLBACK_MODELS
 
-        print("Action: Checking model ID format...")
-        for model in FALLBACK_MODELS:
-            model_id = model["modelId"]
-            print(f"Checking: {model_id}")
+        assert not hasattr(config_module, "FALLBACK_MODELS")
+        assert not hasattr(config_module, "MODEL_ALIASES")
+        assert not hasattr(config_module, "HIDDEN_FROM_LIST")
+        assert not hasattr(config_module, "HIDDEN_MODELS")
 
-            # If model has version number, it should use dot format
-            if any(char.isdigit() for char in model_id):
-                # Check for patterns like "4.5" or "4-5"
-                if "-4-5" in model_id or "-4-0" in model_id:
-                    print(f"  WARNING: {model_id} uses dash format instead of dot")
-                    # This is acceptable but not ideal
-                    pass
+    def test_dotenv_path_is_scoped_to_current_checkout(self):
+        """Worktrees must not discover credentials from a parent checkout."""
+        import kiro.config as config_module
 
-    def test_model_catalog_registries_stay_synchronized(self):
-        """Ensure every fallback model has one curated alias and is hidden raw."""
-        from kiro.config import FALLBACK_MODELS, HIDDEN_FROM_LIST, MODEL_ALIASES
-
-        fallback_ids = {model["modelId"] for model in FALLBACK_MODELS}
-        alias_targets = set(MODEL_ALIASES.values())
-
-        assert len(fallback_ids) == len(FALLBACK_MODELS)
-        assert fallback_ids == set(HIDDEN_FROM_LIST)
-        assert fallback_ids == alias_targets
-        assert len(alias_targets) == len(MODEL_ALIASES)
-
-    def test_gpt_5_6_models_have_picker_aliases(self):
-        """Ensure all GPT 5.6 variants are exposed once through Claude Code."""
-        from kiro.config import FALLBACK_MODELS, HIDDEN_FROM_LIST, MODEL_ALIASES
-
-        expected_ids = {
-            "gpt-5.6-luna",
-            "gpt-5.6-terra",
-            "gpt-5.6-sol",
-        }
-        fallback_ids = {model["modelId"] for model in FALLBACK_MODELS}
-
-        assert expected_ids <= fallback_ids
-        assert expected_ids <= set(HIDDEN_FROM_LIST)
-        assert expected_ids <= set(MODEL_ALIASES.values())
-        for alias, model_id in MODEL_ALIASES.items():
-            if model_id in expected_ids:
-                assert alias.startswith("claude-gpt-5.6-")
-                assert " · " in alias
-
-
-class TestFallbackModelsIntegration:
-    """Integration tests for FALLBACK_MODELS with ModelResolver."""
-    
-    @pytest.mark.asyncio
-    async def test_fallback_models_work_with_model_resolver(self):
-        """
-        What it does: Verifies that fallback models work with ModelResolver normalization.
-        Purpose: Ensure that model name normalization (claude-opus-4-5 → claude-opus-4.5)
-                 works correctly with fallback models, just like with API models.
-        """
-        print("Setup: Importing FALLBACK_MODELS and creating cache...")
-        from kiro.config import FALLBACK_MODELS
-        from kiro.cache import ModelInfoCache
-        from kiro.model_resolver import ModelResolver
-        
-        # Simulate DNS failure scenario - populate cache with fallback models
-        cache = ModelInfoCache()
-        await cache.update(FALLBACK_MODELS)
-        
-        print(f"Cache populated with {cache.size} fallback models")
-        print(f"Model IDs in cache: {cache.get_all_model_ids()}")
-        
-        # Create resolver
-        resolver = ModelResolver(cache=cache, hidden_models={})
-        
-        print("\nAction: Testing normalization with dash format...")
-        # Test that dash format (claude-opus-4-5) is normalized and found
-        test_cases = [
-            ("claude-opus-4-5", "claude-opus-4.5"),  # Dash → Dot
-            ("claude-sonnet-4-5", "claude-sonnet-4.5"),  # Dash → Dot
-            ("claude-haiku-4-5", "claude-haiku-4.5"),  # Dash → Dot
-        ]
-        
-        for input_name, expected_normalized in test_cases:
-            print(f"\n  Testing: {input_name} → {expected_normalized}")
-            resolution = resolver.resolve(input_name)
-            
-            print(f"    Resolution source: {resolution.source}")
-            print(f"    Normalized: {resolution.normalized}")
-            print(f"    Internal ID: {resolution.internal_id}")
-            print(f"    Is verified: {resolution.is_verified}")
-            
-            # Verify normalization happened
-            print(f"    Comparing normalized: Expected '{expected_normalized}', Got '{resolution.normalized}'")
-            assert resolution.normalized == expected_normalized
-            
-            # Verify model was found in cache (not passthrough)
-            print(f"    Comparing source: Expected 'cache', Got '{resolution.source}'")
-            assert resolution.source == "cache", f"Model {input_name} should be found in fallback cache"
-            
-            print(f"    Comparing is_verified: Expected True, Got {resolution.is_verified}")
-            assert resolution.is_verified is True
-    
-    @pytest.mark.asyncio
-    async def test_fallback_models_appear_in_available_models(self):
-        """
-        What it does: Verifies that fallback models appear in get_available_models().
-        Purpose: Ensure that /v1/models endpoint will show fallback models.
-        """
-        print("Setup: Importing FALLBACK_MODELS and creating cache...")
-        from kiro.config import FALLBACK_MODELS
-        from kiro.cache import ModelInfoCache
-        from kiro.model_resolver import ModelResolver
-        
-        cache = ModelInfoCache()
-        await cache.update(FALLBACK_MODELS)
-        
-        resolver = ModelResolver(cache=cache, hidden_models={})
-        
-        print("Action: Getting available models...")
-        available = resolver.get_available_models()
-        
-        print(f"Available models: {available}")
-        print(f"Comparing length: Expected {len(FALLBACK_MODELS)}, Got {len(available)}")
-        assert len(available) == len(FALLBACK_MODELS)
-        
-        # Verify all fallback models are present
-        fallback_ids = {m["modelId"] for m in FALLBACK_MODELS}
-        available_set = set(available)
-        
-        print(f"Comparing sets: Expected {fallback_ids}, Got {available_set}")
-        assert fallback_ids == available_set
+        repository_root = Path(config_module.__file__).resolve().parent.parent
+        assert config_module._REPO_ENV_FILE == repository_root / ".env"
+        assert config_module.ACCOUNTS_CONFIG_FILE == str(repository_root / "credentials.json")
+        assert config_module.ACCOUNTS_STATE_FILE == str(repository_root / "state.json")
 
 
 # ==================================================================================================
@@ -902,8 +719,9 @@ class TestAccountSystemConfig:
         import kiro.config as config_module
         reload(config_module)
         
-        print(f"Comparing ACCOUNTS_CONFIG_FILE: Expected 'credentials.json', Got '{config_module.ACCOUNTS_CONFIG_FILE}'")
-        assert config_module.ACCOUNTS_CONFIG_FILE == "credentials.json"
+        expected = str(Path(config_module.__file__).resolve().parent.parent / "credentials.json")
+        print(f"Comparing ACCOUNTS_CONFIG_FILE: Expected '{expected}', Got '{config_module.ACCOUNTS_CONFIG_FILE}'")
+        assert config_module.ACCOUNTS_CONFIG_FILE == expected
     
     def test_accounts_state_file_default(self, monkeypatch):
         """
@@ -918,8 +736,9 @@ class TestAccountSystemConfig:
         import kiro.config as config_module
         reload(config_module)
         
-        print(f"Comparing ACCOUNTS_STATE_FILE: Expected 'state.json', Got '{config_module.ACCOUNTS_STATE_FILE}'")
-        assert config_module.ACCOUNTS_STATE_FILE == "state.json"
+        expected = str(Path(config_module.__file__).resolve().parent.parent / "state.json")
+        print(f"Comparing ACCOUNTS_STATE_FILE: Expected '{expected}', Got '{config_module.ACCOUNTS_STATE_FILE}'")
+        assert config_module.ACCOUNTS_STATE_FILE == expected
     
     def test_account_recovery_timeout_default(self, monkeypatch):
         """

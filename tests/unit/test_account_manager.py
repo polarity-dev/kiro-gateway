@@ -779,12 +779,12 @@ class TestAccountManagerInitializeAccount:
     @pytest.mark.asyncio
     async def test_initialize_account_fetch_models_fallback(self, tmp_path):
         """
-        Test fallback to FALLBACK_MODELS when API fails.
-        
-        What it does: Initializes account when ListAvailableModels fails
-        Purpose: Verify fallback mechanism
+        Test last-known-good behavior when model discovery fails.
+
+        What it does: Initializes an account without replacing its saved catalog
+        Purpose: Verify the gateway never invents a static fallback catalog
         """
-        print("\n=== Test: initialize_account with fallback models ===")
+        print("\n=== Test: initialize_account with last-known-good models ===")
         
         # Arrange
         test_json = tmp_path / "test.json"
@@ -821,8 +821,13 @@ class TestAccountManagerInitializeAccount:
         
         # Assert
         print(f"Initialization success: {success}")
-        assert success is True  # Should succeed with fallback
-        assert manager._accounts[account_id].model_cache is not None
+        assert success is True
+        account = manager._accounts[account_id]
+        assert account.model_cache is not None
+        assert account.model_cache.is_empty()
+        assert account.model_catalog == []
+        assert account.model_resolver.get_available_models() == []
+        assert account.model_resolver.resolve("future-model").internal_id == "future-model"
 
 
 class TestAccountManagerGetNextAccount:
@@ -1142,6 +1147,34 @@ class TestAccountManagerSaveState:
         print(f"Tmp file exists: {tmp_file.exists()}")
         assert not tmp_file.exists()
 
+    @pytest.mark.asyncio
+    async def test_model_catalog_round_trips_through_state(self, tmp_path):
+        """Persist and reload the per-account last-known-good catalog."""
+        test_json = tmp_path / "test.json"
+        test_json.write_text(json.dumps({"refreshToken": "token"}))
+        creds_file = tmp_path / "credentials.json"
+        creds_file.write_text(json.dumps([
+            {"type": "json", "path": str(test_json), "enabled": True}
+        ]))
+        state_file = tmp_path / "state.json"
+        catalog = [{
+            "modelId": "future-model",
+            "rateMultiplier": 0.5,
+            "tokenLimits": {"maxInputTokens": 123000},
+        }]
+
+        manager = AccountManager(str(creds_file), str(state_file))
+        await manager.load_credentials()
+        account_id = str(test_json.resolve())
+        manager._accounts[account_id].model_catalog = catalog
+        await manager._save_state()
+
+        restored = AccountManager(str(creds_file), str(state_file))
+        await restored.load_credentials()
+        await restored.load_state()
+
+        assert restored._accounts[account_id].model_catalog == catalog
+
 
 class TestAccountManagerGetFirstAccount:
     """
@@ -1217,6 +1250,26 @@ class TestAccountManagerGetFirstAccount:
         # Act & Assert
         with pytest.raises(RuntimeError, match="No initialized accounts available"):
             manager.get_first_account()
+
+
+class TestAccountManagerCatalogRefresh:
+    """Regression tests for catalog refresh after startup failures."""
+
+    @pytest.mark.asyncio
+    async def test_zero_timestamp_retries_discovery_on_next_request(self, tmp_path):
+        """An initial empty catalog does not remain permanently stuck."""
+        manager = AccountManager(
+            credentials_file=str(tmp_path / "credentials.json"),
+            state_file=str(tmp_path / "state.json"),
+        )
+        account = Account(id="account", auth_manager=Mock())
+        manager._accounts[account.id] = account
+        manager._refresh_account_models = AsyncMock()
+
+        selected = await manager.get_next_account("future-model")
+
+        assert selected is account
+        manager._refresh_account_models.assert_awaited_once_with(account.id)
 
 
 class TestAccountManagerGetAllAvailableModels:

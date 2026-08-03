@@ -238,10 +238,12 @@ token = await auth_manager.get_access_token()
 
 **Роль:** Потокобезопасное хранилище конфигураций моделей.
 
-**Стратегия Заполнения:** 
-- Lazy Loading через `/ListAvailableModels`
-- TTL кэша: 1 час
-- Fallback на статический список моделей
+**Стратегия заполнения:**
+- Динамическое обнаружение через Q endpoint `ListAvailableModels`
+- TTL-обновление для каждого аккаунта
+- Последний корректный каталог хранится в `state.json`; статического списка нет
+- `/v1/models` использует ID, созданные `build_model_display_id()`
+- Локальный allowlist Claude Code синхронизируется `scripts/sync_claude_models.py`
 
 **Основные методы:**
 - `update(models_data)` — обновление кэша

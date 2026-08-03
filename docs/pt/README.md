@@ -21,29 +21,9 @@ Feito com ❤️ por [@Jwadow](https://github.com/jwadow)
 
 ---
 
-## 🤖 Modelos Disponíveis (Lista Gratuita)
+## 🤖 Modelos Disponíveis
 
-> ⚠️ **Importante:** A disponibilidade de modelos depende do seu plano Kiro (gratuito/pago). O gateway fornece acesso aos modelos disponíveis no seu IDE ou CLI com base na sua assinatura. A lista abaixo mostra os modelos comumente disponíveis no **plano gratuito**.
-
-> 🔒 **Claude Opus 4.5** foi removido do plano gratuito em 17 de janeiro de 2026. Pode estar disponível em planos pagos — verifique a lista de modelos no seu IDE/CLI.
-
-🚀 **Claude Sonnet 4.5** — Desempenho equilibrado. Ótimo para programação, escrita e tarefas de uso geral.
-
-⚡ **Claude Haiku 4.5** — Velocidade relâmpago. Perfeito para respostas rápidas, tarefas simples e chat.
-
-📦 **Claude Sonnet 4** — Geração anterior. Ainda poderoso e confiável para a maioria dos casos de uso.
-
-💤 **GLM-5** — Modelo MoE aberto (744B parâmetros, 40B ativos). Modelo avançado para engenharia de sistemas complexos e tarefas agênticas de longo prazo.
-
-🐋 **DeepSeek-V3.2** — Modelo MoE aberto (685B parâmetros, 37B ativos). Desempenho equilibrado para programação, raciocínio e tarefas gerais.
-
-🧩 **MiniMax M2.5** — Modelo MoE aberto (230B parâmetros, 10B ativos). Versão aprimorada com capacidades expandidas de raciocínio e tratamento de tarefas.
-
-🧩 **MiniMax M2.1** — Modelo MoE aberto (230B parâmetros, 10B ativos). Ótimo para tarefas complexas, planejamento e fluxos de trabalho multietapas.
-
-🤖 **Qwen3-Coder-Next** — Modelo MoE aberto (80B parâmetros, 3B ativos). Focado em programação. Excelente para desenvolvimento e projetos grandes.
-
-> 💡 **Resolução Inteligente de Modelos:** Use qualquer formato de nome de modelo — `claude-sonnet-4-5`, `claude-sonnet-4.5`, ou até nomes versionados como `claude-sonnet-4-5-20250929`. O gateway normaliza automaticamente.
+A disponibilidade é descoberta dinamicamente no Kiro para a assinatura e região autenticadas; o repositório não mantém uma lista estática autoritativa. Consulte o catálogo atual com `GET /v1/models` autenticado. Execute `python3 scripts/sync_claude_models.py sync` para atualizar o seletor filtrado do Claude Code.
 
 ---
 

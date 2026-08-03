@@ -162,3 +162,23 @@ async def test_fetch_available_models_rejects_malformed_schema(
 
     with pytest.raises(ModelDiscoveryError, match=message):
         await fetch_available_models(discovery_auth, http_client=client)
+
+
+def test_state_catalog_deduplicates_by_model_identity(tmp_path) -> None:
+    """Account-specific metadata variants produce one global picker row."""
+    from kiro.model_discovery import load_state_model_catalog
+
+    state = tmp_path / "state.json"
+    state.write_text(
+        json.dumps({
+            "accounts": {
+                "a": {"model_catalog": [{"modelId": "gpt-x", "rateMultiplier": 1}]},
+                "b": {"model_catalog": [{"modelId": "gpt-x", "rateMultiplier": 2}]},
+            }
+        }),
+        encoding="utf-8",
+    )
+
+    assert load_state_model_catalog(state) == [
+        {"modelId": "gpt-x", "rateMultiplier": 1}
+    ]

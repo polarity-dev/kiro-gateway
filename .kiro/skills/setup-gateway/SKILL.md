@@ -22,11 +22,14 @@ improvise a different flow.
    user how to fix it and stop.
 1. **Claude Code.** `claude --version`; if missing,
    `curl -fsSL https://claude.ai/install.sh | bash`, then re-check.
-2. **Gateway installer.** `./setup.sh -y` (non-interactive; writes `.env` and
-   `~/.claude/settings.json`).
+2. **Gateway installer.** `./setup.sh -y` (non-interactive; writes `.env`,
+   discovers Kiro's live catalog, and atomically synchronizes
+   `~/.claude/settings.json`). The generated non-empty `availableModels` string
+   list plus `enforceAvailableModels: true` hides Claude Code's built-in rows.
 3. **Start gateway.** `python3 main.py` (foreground, `localhost:8000`).
-4. **Verify.** `curl` the `/v1/models` endpoint, then have the user run `claude`
-   in a new terminal and check `/model` lists models `From gateway`.
+4. **Verify.** Compare authenticated `/v1/models` with `availableModels`, then
+   have the user run `claude` in a new terminal and confirm `/model` contains
+   only Default plus rows labelled `From gateway`.
 5. **Offer the `kiro-credits` skill globally** — check live Kiro credits from
    any repo. Symlink into both `~/.claude/skills/` and `~/.kiro/skills/`.
 6. **Offer the `enable-claude-code` skill globally** — convert any Kiro repo

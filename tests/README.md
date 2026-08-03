@@ -74,8 +74,10 @@ tests/
 ├── unit/                            # Unit tests for individual components
 │   ├── test_account_errors.py      # Account System error classification (FATAL vs RECOVERABLE)
 │   ├── test_account_manager.py     # AccountManager tests (failover, Circuit Breaker, sticky behavior, state persistence)
+│   ├── test_auth_factory.py        # Environment-backed auth construction for scripts
 │   ├── test_auth_manager.py        # KiroAuthManager tests (including api_region parameter priority)
 │   ├── test_cache.py               # ModelInfoCache tests (is_valid_model, add_hidden_model)
+│   ├── test_claude_settings.py     # Safe Claude settings merge and atomic-write tests
 │   ├── test_config.py              # Configuration tests (SERVER_HOST, SERVER_PORT, LOG_LEVEL, Account System constants)
 │   ├── test_converters_anthropic.py # Anthropic Messages API → Kiro converter tests
 │   ├── test_converters_core.py     # Shared conversion logic tests (UnifiedMessage, merging, truncation recovery system prompt)
@@ -88,16 +90,20 @@ tests/
 │   ├── test_main_cli.py            # CLI argument parsing tests (--host, --port)
 │   ├── test_main_lifespan.py       # Application lifespan tests (Account System initialization, legacy migration, background tasks)
 │   ├── test_mcp_tools.py           # MCP Tools tests (WebSearch: ID generation, MCP API calls, SSE emulation, query extraction)
+│   ├── test_model_discovery.py     # Kiro ListAvailableModels and last-known-good helpers
 │   ├── test_model_resolver.py      # Dynamic Model Resolution System tests
 │   ├── test_models_anthropic.py    # Anthropic Pydantic models tests (all content blocks, tools, streaming, server-side tools)
 │   ├── test_models_openai.py       # OpenAI Pydantic models tests (messages, tools, responses, streaming)
 │   ├── test_network_errors.py      # Network error handling tests
 │   ├── test_parsers.py             # AwsEventStreamParser tests (JSON truncation diagnostics, truncation recovery integration)
+│   ├── test_probe_models.py        # Runtime probe discovery and explicit-candidate tests
 │   ├── test_routes_anthropic.py    # Anthropic API endpoint tests (/v1/messages, truncation recovery, WebSearch, Account System failover)
 │   ├── test_routes_openai.py       # OpenAI API endpoint tests (/v1/chat/completions, truncation recovery, WebSearch, Account System failover)
 │   ├── test_streaming_anthropic.py # Anthropic streaming response tests (truncation detection, stop_reason priority, initial_response reuse)
 │   ├── test_streaming_core.py      # Shared streaming logic tests (first-token retry, initial_response parameter)
 │   ├── test_streaming_openai.py    # OpenAI streaming response tests (truncation detection, finish_reason priority, initial_response reuse)
+│   ├── test_sync_claude_models.py  # Dynamic catalog sync CLI and fallback-source tests
+│   ├── test_setup_script.py        # setup.sh model-sync integration regressions
 │   ├── test_thinking_parser.py     # ThinkingParser tests (FSM for thinking blocks)
 │   ├── test_tokenizer.py           # Tokenizer tests (tiktoken)
 │   ├── test_truncation_recovery.py # Truncation Recovery System tests (synthetic message generation)
