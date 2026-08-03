@@ -48,6 +48,7 @@ from kiro.config import (
     get_kiro_q_host,
     get_aws_sso_oidc_url,
 )
+from kiro.atomic_io import AtomicWriteError, write_text_atomic
 from kiro.utils import get_machine_fingerprint
 
 
@@ -392,9 +393,11 @@ class KiroAuthManager:
         - region: AWS region
         - expiresAt: Token expiration time (ISO 8601)
         
-        Additional fields for AWS SSO OIDC (kiro-cli):
+        Additional fields for AWS SSO OIDC (kiro-cli or direct bootstrap):
         - clientId: OAuth client ID
         - clientSecret: OAuth client secret
+        - apiRegion: Q Developer API region, separate from the SSO region
+        - scopes: OAuth scopes granted to the registered client
         
         For Enterprise Kiro IDE:
         - clientIdHash: Hash of client ID (Enterprise Kiro IDE)
@@ -421,11 +424,16 @@ class KiroAuthManager:
             if 'profileArn' in data:
                 self._profile_arn = data['profileArn']
             if 'region' in data:
-                # Store as SSO region for OIDC token refresh
+                # The JSON region is the IAM Identity Center/OIDC region.
                 self._sso_region = data['region']
-                # Also use as detected API region (can be overridden by KIRO_API_REGION env var)
+                logger.debug(f"SSO region from JSON credentials: {data['region']}")
+            if 'apiRegion' in data:
+                # Direct bootstrap records the Q Developer region separately.
+                self._detected_api_region = data['apiRegion']
+                logger.debug(f"API region from JSON credentials: {data['apiRegion']}")
+            elif 'region' in data:
+                # Preserve compatibility with existing Kiro credential files.
                 self._detected_api_region = data['region']
-                logger.debug(f"Region from JSON credentials: {data['region']}")
             
             # Load clientIdHash and device registration for Enterprise Kiro IDE
             if 'clientIdHash' in data:
@@ -437,7 +445,9 @@ class KiroAuthManager:
                 self._client_id = data['clientId']
             if 'clientSecret' in data:
                 self._client_secret = data['clientSecret']
-            
+            if 'scopes' in data and isinstance(data['scopes'], list):
+                self._scopes = data['scopes']
+
             # Parse expiresAt
             if 'expiresAt' in data:
                 try:
@@ -504,21 +514,30 @@ class KiroAuthManager:
                 with open(path, 'r', encoding='utf-8') as f:
                     existing_data = json.load(f)
             
-            # Update data
+            # Update data while preserving bootstrap metadata needed after restart.
             existing_data['accessToken'] = self._access_token
             existing_data['refreshToken'] = self._refresh_token
             if self._expires_at:
                 existing_data['expiresAt'] = self._expires_at.isoformat()
             if self._profile_arn:
                 existing_data['profileArn'] = self._profile_arn
-            
-            # Save
-            with open(path, 'w', encoding='utf-8') as f:
-                json.dump(existing_data, f, indent=2, ensure_ascii=False)
-            
-            logger.debug(f"Credentials saved to {self._creds_file}")
-            
-        except Exception as e:
+            if self._client_id:
+                existing_data['clientId'] = self._client_id
+            if self._client_secret:
+                existing_data['clientSecret'] = self._client_secret
+            if self._sso_region:
+                existing_data['region'] = self._sso_region
+            if self._detected_api_region:
+                existing_data['apiRegion'] = self._detected_api_region
+            if self._scopes:
+                existing_data['scopes'] = self._scopes
+
+            content = json.dumps(existing_data, indent=2, ensure_ascii=False) + "\n"
+            write_text_atomic(path, content, default_mode=0o600, preserve_mode=False)
+            path.chmod(0o600)
+            logger.debug(f"Credentials saved atomically to {self._creds_file}")
+
+        except (AtomicWriteError, OSError, json.JSONDecodeError) as e:
             logger.error(f"Error saving credentials: {e}")
     
     def _save_credentials_to_sqlite(self) -> None:

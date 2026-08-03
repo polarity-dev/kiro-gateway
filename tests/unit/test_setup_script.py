@@ -21,6 +21,14 @@ def test_setup_resolves_and_persists_one_shared_port() -> None:
     assert "--check-port" in script
 
 
+def test_setup_uses_default_port_without_prompting() -> None:
+    """Setup accepts the resolved default unless --port is supplied."""
+    script = SETUP_SCRIPT.read_text(encoding="utf-8")
+
+    assert "Gateway port [%s]:" not in script
+    assert 'ok "Gateway port: $PORT"' in script
+
+
 def test_setup_prints_port_neutral_shell_helper() -> None:
     """The recommended helper delegates port selection to the checkout dotenv."""
     script = SETUP_SCRIPT.read_text(encoding="utf-8")
@@ -71,3 +79,30 @@ def test_setup_defines_prompt_helper_for_optional_installs() -> None:
 
     assert "ask() {" in script
     assert 'if ask "Install the SwiftBar menu bar widget?"' in script
+
+
+def test_setup_supports_direct_identity_center_login() -> None:
+    """The installer can bootstrap from an AWS profile without Kiro artifacts."""
+    script = SETUP_SCRIPT.read_text(encoding="utf-8")
+
+    assert "--aws-profile" in script
+    assert "--q-profile" in script
+    assert 'scripts/kiro_login.py" "${LOGIN_ARGS[@]}"' in script
+    assert 'CREDS_FILE="$DIRECT_CREDS_FILE"' in script
+    assert 'KIRO_CREDS_FILE="$CREDS_FILE"' in script
+    assert "ListAvailableProfiles" in script
+    assert "LOGIN_ARGS_FORCE=1" in script
+    assert 'LOGIN_ARGS+=(--force)' in script
+    assert "LOGIN_FORCE_ARGS" not in script
+    assert script.index('.env already exists. Overwrite?') < script.index('scripts/kiro_login.py')
+    assert '--q-profile requires --aws-profile' in script
+    assert '[[ "$2" != -* ]]' in script
+
+
+def test_setup_does_not_load_tokens_into_shell_variables() -> None:
+    """Setup reads non-secret metadata without exposing tokens to the shell."""
+    script = SETUP_SCRIPT.read_text(encoding="utf-8")
+
+    assert "ACCESS_TOKEN=" not in script
+    assert 'required = ("accessToken", "refreshToken")' in script
+    assert "print(data['accessToken'])" not in script

@@ -1,6 +1,6 @@
 ---
 name: setup-gateway
-description: Set up Kiro Gateway + Claude Code on the user's machine from a fresh clone. Checks/installs Claude Code, runs the gateway installer, starts the server, verifies end to end, and offers to install two global skills (kiro-credits for live subscription usage, enable-claude-code for converting Kiro repos to dual-mode). Use when the user asks to "set up kiro-gateway", "set up Claude Code", "get me running", "configura il gateway", "installami claude code", or opens this repo for the first time and wants it working. macOS + Enterprise/IdC (Kiro IDE).
+description: Set up Kiro Gateway + Claude Code from a fresh clone using AWS IAM Identity Center, without requiring Kiro IDE or Kiro CLI. Runs device login, discovers the Amazon Q profile, synchronizes the gateway port and Claude Code, verifies end to end, and offers optional global skills.
 ---
 
 # Set up Kiro Gateway + Claude Code
@@ -16,15 +16,16 @@ improvise a different flow.
 
 ## Flow (summary — full detail in the runbook)
 
-0. **Preconditions.** macOS (`uname` → `Darwin`), Python 3.10+, Kiro IDE logged
-   in (`~/.aws/sso/cache/kiro-auth-token.json` exists), and at least one message
-   sent in Kiro IDE (so the `profileArn` is in its logs). If one fails, tell the
-   user how to fix it and stop.
+0. **Preconditions.** macOS/Linux, Python 3.10+, an AWS shared-config profile
+   containing IAM Identity Center `sso_start_url` and `sso_region`, and an
+   assigned Amazon Q Developer subscription/profile.
 1. **Claude Code.** `claude --version`; if missing,
    `curl -fsSL https://claude.ai/install.sh | bash`, then re-check.
-2. **Gateway installer.** `./setup.sh -y` (or `./setup.sh -y --port PORT` for
-   a requested custom port). It writes `.env`, discovers Kiro's live catalog,
-   and atomically synchronizes `~/.claude/settings.json`. The generated non-empty
+2. **Gateway installer.** Ask for the AWS profile name, then run
+   `./setup.sh -y --aws-profile NAME` (add `--port PORT` when requested).
+   Browser device approval remains interactive. Setup writes `.env`, discovers
+   the Q profile and live catalog, and atomically synchronizes
+   `~/.claude/settings.json`. The generated non-empty
    `availableModels` string list plus `enforceAvailableModels: true` hides Claude
    Code's built-in rows.
 3. **Start gateway.** `python3 main.py` (foreground; reads `SERVER_PORT` from
@@ -44,7 +45,7 @@ improvise a different flow.
 
 Use `.env` as the only persistent source of truth:
 
-- First setup with a custom port: `./setup.sh -y --port PORT`.
+- First setup with a custom port: `./setup.sh -y --aws-profile NAME --port PORT`.
 - Existing setup: `./setup.sh --port PORT`; this preserves credentials and
   unrelated Claude settings, then prints a restart checklist.
 - Read-only verification: `./setup.sh --check-port`.
@@ -163,5 +164,5 @@ If they decline, leave it — purely cosmetic, changes nothing functionally.
 
 - Never commit secrets. `.env`, `credentials.json`, `state.json` are gitignored.
 - Never hand-edit `profileArn` / `KIRO_API_REGION`; they come from `setup.sh`.
-- Prefer `./setup.sh -y` over manual configuration — it is the single source of
-  truth and is safe to re-run.
+- Prefer `./setup.sh -y --aws-profile NAME` over manual configuration — it is
+  the single source of truth and is safe to re-run.

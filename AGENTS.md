@@ -7,8 +7,8 @@ This document provides essential information for AI agents (Claude, GPT, etc.) w
 > gateway + Claude Code on a user's machine, follow the setup runbook instead:
 > **[`.kiro/steering/setup.md`](.kiro/steering/setup.md)** (single source of
 > truth). The short version: `claude --version` (install with
-> `curl -fsSL https://claude.ai/install.sh | bash` if missing) → `./setup.sh -y`
-> → `python3 main.py` → verify.
+> `curl -fsSL https://claude.ai/install.sh | bash` if missing) →
+> `./setup.sh -y --aws-profile NAME` → `python3 main.py` → verify.
 
 ## Project Philosophy
 

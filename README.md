@@ -54,64 +54,50 @@ automatically; Claude Code, Cursor, and Codex pick it up from `CLAUDE.md` / `AGE
 
 ### 🛠️ Manual path
 
-**If you sign in to Kiro IDE with an AWS IAM Identity Center user (your own or your
-organization's), use this path.** It replaces the manual [Configuration](#%EF%B8%8F-configuration)
-steps below.
+**AWS IAM Identity Center users can bootstrap the gateway without Kiro IDE or Kiro CLI.**
+Configure an AWS shared-config profile with `sso_start_url` and `sso_region` (directly or through
+`sso_session`), then run:
 
 ```bash
 git clone https://github.com/polarity-dev/kiro-gateway.git
 cd kiro-gateway
-./setup.sh              # add -y for non-interactive (AI agents / CI)
+./setup.sh --aws-profile company
 python3 main.py
 ```
 
-Then run `claude` from any terminal. No environment exports needed.
-
-> **Prerequisite:** [Claude Code](https://code.claude.com/docs/en/setup) must be installed. Check
-> with `claude --version`; if missing, install with `curl -fsSL https://claude.ai/install.sh | bash`.
+Add `-y` to accept setup prompts; browser device approval is still required. With multiple Q
+profiles, add `--q-profile NAME_OR_ARN`. A custom first-setup port can be combined with
+`--port PORT`.
 
 ### What setup.sh does
 
-Enterprise accounts need two values that cannot be discovered automatically by the upstream code.
-The installer resolves both:
+With `--aws-profile`, setup registers a public AWS SSO OIDC client, completes device authorization,
+discovers the assigned Amazon Q Developer profile through bearer-authenticated
+`ListAvailableProfiles`, and writes refreshable owner-only (`0600`) credentials to
+`~/.aws/sso/cache/kiro-gateway-auth.json`. It stores the SSO and Q API regions separately,
+generates `.env`, and atomically synchronizes Claude Code and the selected gateway port.
 
-| Value | How it is obtained | Why it is needed |
-|-------|--------------------|------------------|
-| `PROFILE_ARN` | Read from Kiro IDE logs at `~/Library/Application Support/Kiro/logs/*/exthost/kiro.kiroAgent/q-client.log` | The AWS SSO OIDC refresh flow never returns it, and `ListAvailableProfiles` returns an empty list for Enterprise accounts. The profile ID is an opaque string that cannot be derived from your AWS account settings. |
-| `KIRO_API_REGION` | Parsed from the region field of the discovered ARN | Your SSO region (where you log in) and your subscription's API region are usually different. DNS probing is unreliable because several `runtime.*.kiro.dev` hosts resolve regardless of where your subscription lives. |
-
-It also generates a random `PROXY_API_KEY`, writes `.env`, and atomically merges
-Claude Code settings. Setup discovers Kiro's current catalog directly, writes its
-exact display IDs as a non-empty `availableModels` string list, and enables
-`enforceAvailableModels` so built-in Claude Code model rows stay hidden. Existing
-unrelated settings and a still-valid selected model are preserved.
-
-The script is safe to re-run: it backs up `.env` to `.env.bak` and prompts before
-overwriting anything.
+Running without `--aws-profile` preserves the legacy Kiro IDE credential/log path. Existing
+credential and `.env` files are never replaced without confirmation; `.env` is backed up first.
 
 ### Requirements
 
-- macOS with [Kiro IDE](https://kiro.dev/) installed and signed in with your AWS IAM Identity Center user
 - Python 3.10+
-- At least one message sent in Kiro IDE, so the `profileArn` appears in its logs
+- an AWS shared-config IAM Identity Center profile
+- an assigned Amazon Q Developer subscription/profile
+- Claude Code
 
 ### Troubleshooting
 
-**`Could not find profileArn in Kiro IDE logs`**
-Send a message in Kiro IDE, then re-run `./setup.sh`. Kiro only writes the ARN once it has
-made an API call. You can also paste the ARN manually when prompted.
+**No Q Developer profiles** — ask the AWS administrator to assign the subscription/profile and
+retry after propagation.
 
-**`runtime.<region>.kiro.dev does not resolve`**
-Your network is blocking the endpoint. Set `VPN_PROXY_URL` in `.env` — see
-[VPN/Proxy Support](#-vpnproxy-support).
+**Multiple Q Developer profiles** — rerun with `--q-profile NAME_OR_ARN`.
 
-**`403 User is not authorized to make this call`**
-The Kiro API rejects requests without a recognised `User-Agent`. The gateway sends a valid one,
-so this usually means you are calling the API directly rather than through the gateway.
+**`runtime.<region>.kiro.dev does not resolve`** — configure `VPN_PROXY_URL` in `.env`.
 
-**Claude Code opens a browser login page**
-`ANTHROPIC_AUTH_TOKEN` must be set, not `ANTHROPIC_API_KEY`. Only the former bypasses the
-interactive OAuth flow. `setup.sh` configures this correctly.
+**Claude Code opens a browser login page** — rerun setup; it configures
+`ANTHROPIC_AUTH_TOKEN`, not `ANTHROPIC_API_KEY`.
 
 ### Shell helper (optional)
 
