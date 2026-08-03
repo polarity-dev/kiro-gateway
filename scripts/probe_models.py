@@ -38,10 +38,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import os
 import sys
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
 
@@ -62,93 +61,43 @@ from kiro.config import (  # noqa: E402
     PROFILE_ARN,
     REGION,
 )
+from kiro.model_discovery import (  # noqa: E402
+    ModelDiscoveryError,
+    fetch_available_models,
+)
 from kiro.utils import get_kiro_headers  # noqa: E402
 
 
-# Static fallback candidates — used only when ListAvailableModels discovery
-# fails (network error, auth issue, etc.). Keep this roughly in sync with
-# FALLBACK_MODELS but it doesn't need to be exact — it's a safety net.
-_STATIC_CANDIDATES: List[str] = sorted({
-    "auto",
-    "claude-opus-5",
-    "claude-sonnet-5",
-    "claude-opus-4.8",
-    "claude-opus-4.7",
-    "claude-opus-4.6",
-    "claude-sonnet-4.6",
-    "claude-opus-4.5",
-    "claude-sonnet-4.5",
-    "claude-sonnet-4",
-    "claude-haiku-4.5",
-    "minimax-m2.5",
-    "minimax-m2.1",
-    "qwen3-coder-next",
-    "gpt-5.6-sol",
-    "gpt-5.6-terra",
-    "gpt-5.6-luna",
-})
-
-
-# Legacy Q endpoint — the only one that exposes ListAvailableModels.
-# runtime.{region}.kiro.dev does NOT have it (returns UnknownOperationException).
-_Q_HOST_TEMPLATE = "https://q.{region}.amazonaws.com"
+# Always audit every configured fallback model. This preserves the probe's
+# ability to detect retired models even when discovery no longer returns them.
+_STATIC_CANDIDATES: List[str] = sorted(
+    {model["modelId"] for model in FALLBACK_MODELS}
+)
 
 
 async def _discover_candidates(auth: KiroAuthManager) -> Optional[List[str]]:
-    """
-    Call ListAvailableModels on the legacy Q endpoint to dynamically discover
-    all model IDs the account has access to. Returns None on failure.
-    """
-    # Extract region from api_host (https://runtime.{region}.kiro.dev)
-    # to build the legacy Q endpoint URL.
-    import re as _re
-    match = _re.search(r"runtime\.([^.]+)\.", auth.api_host)
-    if not match:
-        print(
-            f"⚠️  Cannot extract region from api_host ({auth.api_host}) — "
-            f"falling back to static candidates.",
-            file=sys.stderr,
-        )
-        return None
-    region = match.group(1)
-    q_host = _Q_HOST_TEMPLATE.format(region=region)
-    url = f"{q_host}/ListAvailableModels"
-    token = await auth.get_access_token()
-    headers = get_kiro_headers(auth, token)
-    # The legacy endpoint requires x-amz-target header
-    headers["x-amz-target"] = "AmazonCodeWhispererService.ListAvailableModels"
+    """Discover model IDs available to the authenticated Kiro account.
 
-    params = {"origin": "AI_EDITOR"}
-    if auth.profile_arn:
-        params["profileArn"] = auth.profile_arn
+    Args:
+        auth: Authenticated Kiro account.
 
+    Returns:
+        Sorted model IDs including the Kiro ``auto`` router, or ``None`` when
+        discovery fails and the caller should use static candidates.
+    """
     try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(url, headers=headers, params=params, timeout=15.0)
-            if resp.status_code != 200:
-                print(
-                    f"⚠️  ListAvailableModels returned HTTP {resp.status_code} — "
-                    f"falling back to static candidates.",
-                    file=sys.stderr,
-                )
-                return None
-            data = resp.json()
-            models = data.get("models", [])
-            ids = [m["modelId"] for m in models if "modelId" in m]
-            if ids:
-                # Always include "auto" — it's a router alias that won't show
-                # up in ListAvailableModels but always works.
-                if "auto" not in ids:
-                    ids.append("auto")
-                return sorted(set(ids))
-            return None
-    except Exception as exc:
+        models = await fetch_available_models(auth)
+    except ModelDiscoveryError as exc:
         print(
-            f"⚠️  ListAvailableModels failed ({exc.__class__.__name__}: {exc}) — "
-            f"falling back to static candidates.",
+            f"⚠️  ListAvailableModels failed ({exc}) — "
+            "falling back to static candidates.",
             file=sys.stderr,
         )
         return None
+
+    model_ids = {model["modelId"] for model in models}
+    model_ids.add("auto")
+    return sorted(model_ids)
 
 
 # Classification of a single probe attempt.
@@ -401,14 +350,15 @@ async def _run(candidates: List[str], concurrency: int, timeout: float, discover
     # Warm up the token once so parallel probes don't race on refresh.
     await auth.get_access_token()
 
-    # Dynamic discovery: merge ListAvailableModels output with any explicit candidates
+    # Normal audits cover both the live catalog and every configured fallback,
+    # so retired fallback models can still be detected. Explicit --model runs
+    # pass discover=False and remain strictly targeted.
     discovered: List[str] = []
     if discover:
         discovered_ids = await _discover_candidates(auth)
         if discovered_ids:
             discovered = discovered_ids
-            # Merge: explicit candidates + discovered, deduped
-            candidates = sorted(set(candidates) | set(discovered))
+            candidates = sorted(set(_STATIC_CANDIDATES) | set(discovered))
 
     limits = httpx.Limits(max_connections=concurrency, max_keepalive_connections=concurrency)
     async with httpx.AsyncClient(limits=limits, http2=False) as client:
@@ -422,13 +372,32 @@ async def _run(candidates: List[str], concurrency: int, timeout: float, discover
     return results, discovered
 
 
+def _select_candidates(
+    requested_models: Optional[List[str]],
+    no_discover: bool,
+) -> tuple[List[str], bool]:
+    """Select probe candidates and whether catalog discovery should run.
+
+    Args:
+        requested_models: Explicit ``--model`` values, if any.
+        no_discover: Whether catalog discovery was disabled explicitly.
+
+    Returns:
+        Candidate model IDs and the discovery flag. Explicit model requests are
+        always isolated from catalog discovery.
+    """
+    candidates = requested_models or _STATIC_CANDIDATES
+    discover = not no_discover and not requested_models
+    return list(candidates), discover
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--model",
         action="append",
         dest="models",
-        help="Probe a specific model ID (repeatable). Combined with discovery results.",
+        help="Probe only this model ID (repeatable); skips catalog discovery.",
     )
     parser.add_argument(
         "--no-discover",
@@ -459,12 +428,12 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    # Build candidate list:
-    # - With --model: use those as the base (discovery will merge if enabled)
-    # - Without --model and --no-discover: use static fallback as base
-    # - Without --model and with discover: discovery replaces static list
-    base_candidates = args.models or _STATIC_CANDIDATES
-    discover = not args.no_discover
+    # Explicit --model runs are intentionally isolated: probing one candidate
+    # must not fan out into live requests for the entire account catalog.
+    base_candidates, discover = _select_candidates(
+        args.models,
+        args.no_discover,
+    )
 
     results, discovered = asyncio.run(
         _run(base_candidates, args.concurrency, args.timeout, discover)

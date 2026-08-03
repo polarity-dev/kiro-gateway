@@ -1370,20 +1370,77 @@ class TestModelAliasSystemBasics:
             "fast": "claude-haiku-4.5"
         }
         resolver = ModelResolver(cache=mock_model_cache, aliases=aliases)
-        
+
         print("Action: Resolving all aliases...")
         result1 = resolver.resolve("auto-kiro")
         result2 = resolver.resolve("my-opus")
         result3 = resolver.resolve("fast")
-        
+
         print(f"Comparing: auto-kiro → {result1.internal_id}")
         assert result1.internal_id == "auto"
-        
+
         print(f"Comparing: my-opus → {result2.internal_id}")
         assert result2.internal_id == "claude-opus-4.5"
-        
+
         print(f"Comparing: fast → {result3.internal_id}")
         assert result3.internal_id == "claude-haiku-4.5"
+
+    @pytest.mark.asyncio
+    async def test_dynamic_non_claude_alias_is_visible_and_resolvable(self):
+        """Expose a newly discovered non-Claude model through a reversible alias."""
+        cache = ModelInfoCache()
+        await cache.update([
+            {"modelId": "future-model"},
+            {"modelId": "claude-existing"},
+        ])
+        resolver = ModelResolver(cache=cache, aliases={"curated": "claude-existing"})
+
+        assert resolver.get_available_models() == [
+            "claude-existing",
+            "claude-kiro-future-model",
+            "curated",
+        ]
+
+        result = resolver.resolve("claude-kiro-future-model")
+        assert result.internal_id == "future-model"
+        assert result.source == "cache"
+        assert result.is_verified is True
+
+    @pytest.mark.asyncio
+    async def test_curated_alias_is_hidden_when_live_target_is_missing(self):
+        """Remove a retired model alias after successful authoritative discovery."""
+        cache = ModelInfoCache()
+        await cache.update([{"modelId": "claude-current"}])
+        resolver = ModelResolver(
+            cache=cache,
+            aliases={
+                "current-alias": "claude-current",
+                "retired-alias": "claude-retired",
+            },
+        )
+
+        models = resolver.get_available_models()
+        assert "current-alias" in models
+        assert "retired-alias" not in models
+
+    @pytest.mark.asyncio
+    async def test_dynamic_alias_avoids_real_model_collision(self):
+        """Keep a real Kiro ID when the preferred synthetic alias is occupied."""
+        cache = ModelInfoCache()
+        await cache.update([
+            {"modelId": "future-model"},
+            {"modelId": "claude-kiro-future-model"},
+        ])
+        resolver = ModelResolver(cache=cache, aliases={"curated": "other-model"})
+
+        models = resolver.get_available_models()
+        assert "claude-kiro-future-model" in models
+        assert "claude-kiro-future-model-2" in models
+
+        real = resolver.resolve("claude-kiro-future-model")
+        synthetic = resolver.resolve("claude-kiro-future-model-2")
+        assert real.internal_id == "claude-kiro-future-model"
+        assert synthetic.internal_id == "future-model"
 
 
 class TestModelAliasSystemEdgeCases:

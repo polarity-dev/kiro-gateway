@@ -15,6 +15,7 @@ import asyncio
 import json
 import pytest
 import time
+from fastapi import HTTPException
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
@@ -809,7 +810,9 @@ class TestAccountManagerInitializeAccount:
         # Mock HTTP client to fail
         with patch('kiro.account_manager.KiroHttpClient') as mock_http_class:
             mock_client = AsyncMock()
-            mock_client.request_with_retry = AsyncMock(side_effect=Exception("Network error"))
+            mock_client.request_with_retry = AsyncMock(
+                side_effect=HTTPException(status_code=502, detail="Network error")
+            )
             mock_client.close = AsyncMock()
             mock_http_class.return_value = mock_client
             

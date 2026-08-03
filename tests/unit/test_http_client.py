@@ -1204,6 +1204,40 @@ class TestKiroHttpClientRequestParameters:
         assert response.status_code == 200
     
     @pytest.mark.asyncio
+    async def test_request_with_retry_merges_extra_headers(self, mock_auth_manager_for_http):
+        """Verify operation-specific headers override the standard Kiro headers."""
+        http_client = KiroHttpClient(mock_auth_manager_for_http)
+        mock_response = AsyncMock(status_code=200)
+        captured_kwargs = {}
+
+        async def capture_request(method, url, **kwargs):
+            captured_kwargs.update(kwargs)
+            return mock_response
+
+        mock_client = AsyncMock()
+        mock_client.is_closed = False
+        mock_client.request = AsyncMock(side_effect=capture_request)
+
+        with patch.object(http_client, '_get_client', return_value=mock_client):
+            with patch(
+                'kiro.http_client.get_kiro_headers',
+                return_value={
+                    "Authorization": "Bearer test",
+                    "x-amz-target": "streaming-operation",
+                },
+            ):
+                await http_client.request_with_retry(
+                    "GET",
+                    "https://api.example.com/ListAvailableModels",
+                    extra_headers={"x-amz-target": "list-models-operation"},
+                )
+
+        assert captured_kwargs["headers"] == {
+            "Authorization": "Bearer test",
+            "x-amz-target": "list-models-operation",
+        }
+
+    @pytest.mark.asyncio
     async def test_request_with_retry_post_without_json(self, mock_auth_manager_for_http):
         """
         What it does: Verifies POST request without json_data.

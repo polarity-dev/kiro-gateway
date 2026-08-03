@@ -309,7 +309,41 @@ class ModelResolver:
         self.hidden_models = hidden_models or {}
         self.aliases = aliases or {}
         self.hidden_from_list = set(hidden_from_list or [])
-    
+
+    def _get_dynamic_aliases(self) -> Dict[str, str]:
+        """Build Claude Code-compatible aliases for newly discovered models.
+
+        Curated aliases always take precedence. Synthetic aliases are generated
+        only for non-Claude model IDs without a configured alias, and avoid
+        collisions with both real Kiro IDs and configured alias names.
+
+        Returns:
+            Mapping from synthetic display aliases to raw Kiro model IDs.
+        """
+        model_ids = set(self.cache.get_all_model_ids())
+        configured_targets = set(self.aliases.values())
+        reserved_names = model_ids | set(self.aliases)
+        dynamic_aliases: Dict[str, str] = {}
+
+        for model_id in sorted(model_ids):
+            if (
+                model_id.startswith(("claude", "anthropic"))
+                or model_id in configured_targets
+            ):
+                continue
+
+            base_alias = f"claude-kiro-{model_id}"
+            alias = base_alias
+            suffix = 2
+            while alias in reserved_names:
+                alias = f"{base_alias}-{suffix}"
+                suffix += 1
+
+            dynamic_aliases[alias] = model_id
+            reserved_names.add(alias)
+
+        return dynamic_aliases
+
     def resolve(self, external_model: str) -> ModelResolution:
         """
         Resolve external model name to internal Kiro ID.
@@ -324,8 +358,14 @@ class ModelResolver:
         Returns:
             ModelResolution with internal ID and metadata
         """
-        # Layer 0: Resolve alias (if exists)
+        # Layer 0: Resolve configured and dynamically generated aliases.
         resolved_model = self.aliases.get(external_model, external_model)
+        if resolved_model == external_model:
+            resolved_model = self._get_dynamic_aliases().get(
+                external_model,
+                external_model,
+            )
+
         if resolved_model != external_model:
             logger.debug(
                 f"Alias resolved: '{external_model}' → '{resolved_model}'"
@@ -402,10 +442,25 @@ class ModelResolver:
         
         # Remove models that should be hidden from list
         models -= self.hidden_from_list
-        
-        # Add alias keys (these are the names users will see and use)
-        models.update(self.aliases.keys())
-        
+
+        # Claude Code ignores discovered IDs that do not start with "claude" or
+        # "anthropic". When the gateway has an alias catalog configured, expose
+        # collision-safe synthetic aliases for new non-Claude models.
+        dynamic_aliases = self._get_dynamic_aliases() if self.aliases else {}
+        models -= set(dynamic_aliases.values())
+        models.update(dynamic_aliases)
+
+        # Add curated aliases only when their target is available in the live or
+        # fallback cache. This keeps successful discovery authoritative while a
+        # discovery failure still exposes every configured fallback model.
+        for alias, target in self.aliases.items():
+            normalized_target = normalize_model_name(target)
+            if (
+                self.cache.is_valid_model(normalized_target)
+                or normalized_target in self.hidden_models
+            ):
+                models.add(alias)
+
         return sorted(models)
     
     def get_models_by_family(self, family: str) -> List[str]:

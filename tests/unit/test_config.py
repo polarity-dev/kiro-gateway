@@ -591,12 +591,12 @@ class TestFallbackModelsConfig:
         """
         print("Setup: Importing FALLBACK_MODELS...")
         from kiro.config import FALLBACK_MODELS
-        
+
         print("Action: Checking model ID format...")
         for model in FALLBACK_MODELS:
             model_id = model["modelId"]
             print(f"Checking: {model_id}")
-            
+
             # If model has version number, it should use dot format
             if any(char.isdigit() for char in model_id):
                 # Check for patterns like "4.5" or "4-5"
@@ -604,6 +604,37 @@ class TestFallbackModelsConfig:
                     print(f"  WARNING: {model_id} uses dash format instead of dot")
                     # This is acceptable but not ideal
                     pass
+
+    def test_model_catalog_registries_stay_synchronized(self):
+        """Ensure every fallback model has one curated alias and is hidden raw."""
+        from kiro.config import FALLBACK_MODELS, HIDDEN_FROM_LIST, MODEL_ALIASES
+
+        fallback_ids = {model["modelId"] for model in FALLBACK_MODELS}
+        alias_targets = set(MODEL_ALIASES.values())
+
+        assert len(fallback_ids) == len(FALLBACK_MODELS)
+        assert fallback_ids == set(HIDDEN_FROM_LIST)
+        assert fallback_ids == alias_targets
+        assert len(alias_targets) == len(MODEL_ALIASES)
+
+    def test_gpt_5_6_models_have_picker_aliases(self):
+        """Ensure all GPT 5.6 variants are exposed once through Claude Code."""
+        from kiro.config import FALLBACK_MODELS, HIDDEN_FROM_LIST, MODEL_ALIASES
+
+        expected_ids = {
+            "gpt-5.6-luna",
+            "gpt-5.6-terra",
+            "gpt-5.6-sol",
+        }
+        fallback_ids = {model["modelId"] for model in FALLBACK_MODELS}
+
+        assert expected_ids <= fallback_ids
+        assert expected_ids <= set(HIDDEN_FROM_LIST)
+        assert expected_ids <= set(MODEL_ALIASES.values())
+        for alias, model_id in MODEL_ALIASES.items():
+            if model_id in expected_ids:
+                assert alias.startswith("claude-gpt-5.6-")
+                assert " · " in alias
 
 
 class TestFallbackModelsIntegration:

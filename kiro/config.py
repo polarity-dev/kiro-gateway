@@ -181,8 +181,9 @@ AWS_SSO_OIDC_URL_TEMPLATE: str = "https://oidc.{region}.amazonaws.com/token"
 # Fixed in issue #58 - codewhisperer.{region}.amazonaws.com doesn't exist for non-us-east-1 regions
 KIRO_API_HOST_TEMPLATE: str = "https://runtime.{region}.kiro.dev"
 
-# Host for Q API (ListAvailableModels)
-KIRO_Q_HOST_TEMPLATE: str = "https://runtime.{region}.kiro.dev"
+# Legacy Q host for ListAvailableModels. The runtime host used for inference does
+# not expose this operation.
+KIRO_Q_HOST_TEMPLATE: str = "https://q.{region}.amazonaws.com"
 
 # ==================================================================================================
 # Token Settings
@@ -265,9 +266,9 @@ MODEL_ALIASES: Dict[str, str] = {
     "claude-qwen3-coder-next · 0.05x · 256k": "qwen3-coder-next",
     "claude-minimax-m2.1 · 0.15x · 196k":     "minimax-m2.1",
     "claude-minimax-m2.5 · 0.25x · 196k":     "minimax-m2.5",
-    "claude-gpt-5.6-luna · 0.1x":             "gpt-5.6-luna",
-    "claude-gpt-5.6-terra · 1x":              "gpt-5.6-terra",
-    "claude-gpt-5.6-sol · 2.4x":             "gpt-5.6-sol",
+    "claude-gpt-5.6-luna · 0.1x · 272k":      "gpt-5.6-luna",
+    "claude-gpt-5.6-terra · 1x · 272k":       "gpt-5.6-terra",
+    "claude-gpt-5.6-sol · 2.4x · 272k":       "gpt-5.6-sol",
     "claude-haiku-4.5 · 0.4x · 200k":         "claude-haiku-4.5",
     "claude-sonnet-4 · 1.3x · 200k":          "claude-sonnet-4",
     "claude-sonnet-4.5 · 1.3x · 200k":        "claude-sonnet-4.5",
