@@ -49,7 +49,7 @@ load_dotenv(_REPO_ENV_FILE)
 DEFAULT_SERVER_HOST: str = "0.0.0.0"
 SERVER_HOST: str = os.getenv("SERVER_HOST", DEFAULT_SERVER_HOST)
 
-# Server port (default: 8000)
+# Server port (default: 4567)
 # Can be overridden by CLI: python main.py --port 9000
 # Or by uvicorn directly: uvicorn main:app --port 9000
 DEFAULT_SERVER_PORT: int = 4567

@@ -1,6 +1,7 @@
 # Environment
 .env
 .env.local
+.env.bak
 credentials.json
 state.json
 

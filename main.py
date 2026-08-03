@@ -23,7 +23,7 @@ Kiro Gateway - OpenAI-compatible interface for Kiro API.
 Application entry point. Creates FastAPI app and connects routes.
 
 Usage:
-    # Using default settings (host: 0.0.0.0, port: 8000)
+    # Using default settings (host: 0.0.0.0, port: 4567)
     python main.py
     
     # With CLI arguments (highest priority)
@@ -34,7 +34,7 @@ Usage:
     SERVER_PORT=9000 python main.py
     
     # Using uvicorn directly (uvicorn handles its own CLI args)
-    uvicorn main:app --host 0.0.0.0 --port 8000
+    uvicorn main:app --host 0.0.0.0 --port 4567
 
 Priority: CLI args > Environment variables > Default values
 """
@@ -604,7 +604,7 @@ def parse_cli_args() -> argparse.Namespace:
 Configuration Priority (highest to lowest):
   1. CLI arguments (--host, --port)
   2. Environment variables (SERVER_HOST, SERVER_PORT)
-  3. Default values (0.0.0.0:8000)
+  3. Default values (0.0.0.0:4567)
 
 Examples:
   python main.py                          # Use defaults or env vars
@@ -649,7 +649,7 @@ def resolve_server_config(args: argparse.Namespace) -> tuple[str, int]:
     Priority (highest to lowest):
     1. CLI arguments (--host, --port)
     2. Environment variables (SERVER_HOST, SERVER_PORT)
-    3. Default values (0.0.0.0:8000)
+    3. Default values (0.0.0.0:4567)
     
     Args:
         args: Parsed CLI arguments

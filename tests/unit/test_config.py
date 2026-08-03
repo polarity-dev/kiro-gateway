@@ -402,10 +402,10 @@ class TestServerHostConfig:
 class TestServerPortConfig:
     """Tests for SERVER_PORT configuration."""
     
-    def test_default_server_port_is_8000(self):
+    def test_default_server_port_is_4567(self):
         """
-        What it does: Verifies that SERVER_PORT defaults to 8000.
-        Purpose: Ensure that 8000 is used when no environment variable is set.
+        What it does: Verifies that SERVER_PORT defaults to 4567.
+        Purpose: Ensure that 4567 is used when no environment variable is set.
         """
         print("Setup: Removing SERVER_PORT from environment...")
         
@@ -419,9 +419,9 @@ class TestServerPortConfig:
             
             print(f"SERVER_PORT: {config_module.SERVER_PORT}")
             print(f"DEFAULT_SERVER_PORT: {config_module.DEFAULT_SERVER_PORT}")
-            print(f"Comparing: Expected 8000, Got {config_module.SERVER_PORT}")
-            assert config_module.SERVER_PORT == 8000
-            assert config_module.DEFAULT_SERVER_PORT == 8000
+            print(f"Comparing: Expected 4567, Got {config_module.SERVER_PORT}")
+            assert config_module.SERVER_PORT == 4567
+            assert config_module.DEFAULT_SERVER_PORT == 4567
     
     def test_server_port_from_environment(self):
         """

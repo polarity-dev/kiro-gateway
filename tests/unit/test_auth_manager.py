@@ -4048,6 +4048,33 @@ class TestAPIRegionAutoDetectionJSON:
         print(f"api_host: {manager._api_host}")
         assert "us-east-1" in manager._api_host
     
+    def test_direct_bootstrap_keeps_sso_and_api_regions_separate(self, tmp_path):
+        """
+        What it does: Loads a direct-bootstrap JSON file with separate regions.
+        Purpose: Ensure OIDC refresh and Q API routing use their respective regions.
+        """
+        creds_file = tmp_path / "kiro-gateway-auth.json"
+        creds_file.write_text(json.dumps({
+            "accessToken": "access-token",
+            "refreshToken": "refresh-token",
+            "expiresAt": "2099-01-01T00:00:00+00:00",
+            "profileArn": "arn:aws:codewhisperer:us-east-1:123456789012:profile/abcdefghijkl",
+            "region": "eu-west-1",
+            "apiRegion": "us-east-1",
+            "clientId": "client-id",
+            "clientSecret": "client-secret",
+            "scopes": ["codewhisperer:completions"],
+        }), encoding="utf-8")
+
+        manager = KiroAuthManager(creds_file=str(creds_file))
+
+        assert manager._sso_region == "eu-west-1"
+        assert manager._detected_api_region == "us-east-1"
+        assert manager._scopes == ["codewhisperer:completions"]
+        assert "us-east-1" in manager._api_host
+        assert "eu-west-1" in manager._refresh_url
+        assert manager.auth_type == AuthType.AWS_SSO_OIDC
+
     def test_api_region_json_env_var_override(self, temp_creds_file, monkeypatch):
         """
         What it does: Verifies KIRO_API_REGION env var overrides JSON region.

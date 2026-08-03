@@ -1,24 +1,28 @@
 #!/usr/bin/env bash
 #
-# Kiro Gateway - Interactive setup for Kiro IDE (Enterprise / IdC) users on macOS.
+# Kiro Gateway - Interactive setup for AWS IAM Identity Center users.
 #
-# Automates the discovery steps that are not documented upstream:
-#   1. Locates the Kiro IDE credentials file
-#   2. Probes which runtime.{region}.kiro.dev endpoint your subscription lives in
-#   3. Extracts the CodeWhisperer profileArn from Kiro IDE logs
-#   4. Writes .env and configures ~/.claude/settings.json for Claude Code
+# Preferred path: --aws-profile performs AWS SSO OIDC device authorization and
+# discovers the assigned Amazon Q Developer profile without Kiro IDE or Kiro CLI.
+# With no --aws-profile, the legacy Kiro IDE credential/log discovery remains
+# available for existing installations.
 #
 # Safe to re-run: prompts before overwriting anything.
-# Pass -y/--yes for non-interactive mode (accepts all prompts; for AI agents).
+# Pass -y/--yes to accept setup prompts; device authorization still requires the
+# user to approve the displayed code in their browser.
 
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="$REPO_DIR/.env"
-CREDS_FILE="$HOME/.aws/sso/cache/kiro-auth-token.json"
+LEGACY_CREDS_FILE="$HOME/.aws/sso/cache/kiro-auth-token.json"
+DIRECT_CREDS_FILE="$HOME/.aws/sso/cache/kiro-gateway-auth.json"
+CREDS_FILE="$LEGACY_CREDS_FILE"
 KIRO_LOGS="$HOME/Library/Application Support/Kiro/logs"
 CLAUDE_SETTINGS="$HOME/.claude/settings.json"
-PORT="8000"
+PORT="4567"
+AWS_PROFILE_NAME=""
+Q_PROFILE_SELECTOR=""
 
 info()  { printf '  %s\n' "$*"; }
 ok()    { printf '  \033[32m✓\033[0m %s\n' "$*"; }
@@ -37,19 +41,39 @@ ask() {
   esac
 }
 
-# Non-interactive mode. When set (via -y/--yes), all prompts assume their
-# default answer: overwrite .env (after backing it up) and configure Claude
-# Code. This lets an AI agent run the installer unattended. The one thing it
-# cannot auto-answer is a missing profileArn — that still requires the user to
-# send a message in Kiro IDE first, so the script fails with guidance instead.
+# Non-interactive mode accepts setup prompts. IAM Identity Center device login
+# still requires browser approval, and multiple Q profiles require --q-profile.
 ASSUME_YES=0
-for arg in "$@"; do
-  case "$arg" in
-    -y|--yes) ASSUME_YES=1 ;;
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -y|--yes)
+      ASSUME_YES=1
+      shift
+      ;;
+    --aws-profile)
+      [ "$#" -ge 2 ] || fail "--aws-profile requires a profile name"
+      AWS_PROFILE_NAME="$2"
+      shift 2
+      ;;
+    --q-profile)
+      [ "$#" -ge 2 ] || fail "--q-profile requires a profile name or ARN"
+      Q_PROFILE_SELECTOR="$2"
+      shift 2
+      ;;
     -h|--help)
-      printf 'Usage: %s [-y|--yes]\n\n  -y, --yes   Non-interactive: accept all prompts (for AI agents / CI)\n' "$0"
-      exit 0 ;;
-    *) fail "Unknown argument: $arg (try --help)" ;;
+      cat <<EOF
+Usage: $0 [-y|--yes] [--aws-profile NAME] [--q-profile NAME_OR_ARN]
+
+  --aws-profile NAME       Log in directly through the AWS CLI IdC profile.
+                           Kiro IDE and Kiro CLI are not required.
+  --q-profile NAME_OR_ARN  Select a Q Developer profile when more than one is assigned.
+  -y, --yes                Accept setup prompts. Browser approval is still required.
+
+Without --aws-profile, setup uses existing Kiro IDE credentials and logs.
+EOF
+      exit 0
+      ;;
+    *) fail "Unknown argument: $1 (try --help)" ;;
   esac
 done
 
@@ -66,54 +90,82 @@ fi
 ok "Python dependencies present"
 
 # ---------------------------------------------------------------------------
-step "2/7  Locating Kiro credentials"
+step "2/7  Obtaining Kiro credentials"
 
-[ -f "$CREDS_FILE" ] || fail "$CREDS_FILE not found. Log in to Kiro IDE first."
+if [ -n "$AWS_PROFILE_NAME" ]; then
+  CREDS_FILE="$DIRECT_CREDS_FILE"
+  LOGIN_ARGS=(
+    --aws-profile "$AWS_PROFILE_NAME"
+    --output "$CREDS_FILE"
+  )
+  if [ -n "$Q_PROFILE_SELECTOR" ]; then
+    LOGIN_ARGS+=(--q-profile "$Q_PROFILE_SELECTOR")
+  fi
+  python3 "$REPO_DIR/scripts/kiro_login.py" "${LOGIN_ARGS[@]}" \
+    || fail "IAM Identity Center login failed. Review the message above and retry."
+  ok "Direct IAM Identity Center credentials created"
+else
+  [ -f "$CREDS_FILE" ] || fail \
+    "$CREDS_FILE not found. Log in to Kiro IDE, or use --aws-profile NAME."
+  ok "Existing Kiro IDE credentials found"
+fi
 
-ACCESS_TOKEN=$(python3 -c "import json;print(json.load(open('$CREDS_FILE'))['accessToken'])")
-SSO_REGION=$(python3 -c "import json;print(json.load(open('$CREDS_FILE')).get('region',''))")
-ok "Credentials found (SSO region: ${SSO_REGION:-unknown})"
+# Read only non-secret metadata. The access and refresh tokens never enter shell
+# variables and are never printed by setup.sh.
+CREDENTIAL_METADATA=$(python3 - "$CREDS_FILE" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1]).expanduser()
+with path.open(encoding="utf-8") as stream:
+    data = json.load(stream)
+required = ("accessToken", "refreshToken")
+if any(not isinstance(data.get(key), str) or not data[key] for key in required):
+    raise SystemExit("credential file is missing required tokens")
+for key in ("region", "profileArn", "apiRegion"):
+    value = data.get(key, "")
+    print(value if isinstance(value, str) else "")
+PY
+) || fail "Could not read credential metadata from $CREDS_FILE"
+SSO_REGION=$(printf '%s\n' "$CREDENTIAL_METADATA" | sed -n '1p')
+PROFILE_ARN=$(printf '%s\n' "$CREDENTIAL_METADATA" | sed -n '2p')
+API_REGION=$(printf '%s\n' "$CREDENTIAL_METADATA" | sed -n '3p')
+ok "Credentials loaded (SSO region: ${SSO_REGION:-unknown})"
 
 # ---------------------------------------------------------------------------
-step "3/7  Extracting profileArn from Kiro IDE logs"
+step "3/7  Resolving Q Developer profile"
 
-# Kiro IDE logs every API call it makes, including the profileArn. The profile ID
-# is an opaque string that cannot be derived from your AWS account settings, and
-# the SSO OIDC refresh flow never returns it — reading the logs is the only way.
-# Pick the most frequently seen ARN, as older logs may contain stale entries.
-PROFILE_ARN=""
-if [ -d "$KIRO_LOGS" ]; then
-  PROFILE_ARN=$(grep -rhao 'arn:aws:codewhisperer:[a-z0-9-]*:[0-9]*:profile/[A-Za-z0-9_-]*' \
-    "$KIRO_LOGS" 2>/dev/null | sort | uniq -c | sort -rn | head -1 | awk '{print $2}')
+if [ -z "$PROFILE_ARN" ] && [ -z "$AWS_PROFILE_NAME" ]; then
+  # Legacy Kiro IDE fallback. Direct login obtains the ARN from the bearer
+  # ListAvailableProfiles API and never reads Kiro logs.
+  if [ -d "$KIRO_LOGS" ]; then
+    PROFILE_ARN=$(grep -rhao 'arn:aws:codewhisperer:[a-z0-9-]*:[0-9]*:profile/[A-Za-z0-9_-]*' \
+      "$KIRO_LOGS" 2>/dev/null | sort | uniq -c | sort -rn | head -1 | awk '{print $2}')
+  fi
 fi
 
 if [ -z "$PROFILE_ARN" ]; then
-  warn "Could not find profileArn in Kiro IDE logs."
-  info "Send at least one message in Kiro IDE, then re-run this script."
-  if [ "$ASSUME_YES" -eq 1 ]; then
-    fail "profileArn is required. Send a message in Kiro IDE, then re-run."
-  fi
-  info "Or paste it manually (format: arn:aws:codewhisperer:REGION:ACCOUNT:profile/ID)"
-  printf '  profileArn: '
-  read -r PROFILE_ARN
-  [ -n "$PROFILE_ARN" ] || fail "profileArn is required."
+  fail "No Q Developer profile was discovered. Ask an administrator to assign one, then retry."
 fi
-ok "profileArn: $PROFILE_ARN"
+ok "Q Developer profile: $PROFILE_ARN"
 
 # ---------------------------------------------------------------------------
 step "4/7  Determining Q API region"
 
-# The ARN's region field is authoritative: it names the region actually serving
-# your subscription. Guessing by DNS is unreliable because several
-# runtime.*.kiro.dev hosts resolve regardless of where your subscription lives.
-API_REGION=$(printf '%s' "$PROFILE_ARN" | cut -d: -f4)
-
+# Direct login records the region returned by ListAvailableProfiles. Legacy Kiro
+# files fall back to the region field embedded in the profile ARN.
+if [ -z "$API_REGION" ]; then
+  API_REGION=$(printf '%s' "$PROFILE_ARN" | cut -d: -f4)
+fi
 if [ -z "$API_REGION" ]; then
   fail "Malformed profileArn: cannot read region from '$PROFILE_ARN'."
 fi
 
-host "runtime.$API_REGION.kiro.dev" >/dev/null 2>&1 \
-  || fail "runtime.$API_REGION.kiro.dev does not resolve. Check your network or VPN."
+if command -v host >/dev/null 2>&1; then
+  host "runtime.$API_REGION.kiro.dev" >/dev/null 2>&1 \
+    || fail "runtime.$API_REGION.kiro.dev does not resolve. Check your network or VPN."
+fi
 
 if [ "$API_REGION" != "$SSO_REGION" ]; then
   info "API region ($API_REGION) differs from SSO region (${SSO_REGION:-unknown}) — expected."
@@ -144,15 +196,15 @@ cat > "$ENV_FILE" <<EOF
 # Password protecting THIS proxy. Used as the api_key by your clients.
 PROXY_API_KEY="$PROXY_KEY"
 
-# Kiro IDE credentials (tokens are refreshed automatically)
-KIRO_CREDS_FILE="~/.aws/sso/cache/kiro-auth-token.json"
+# Credentials used and refreshed automatically by the gateway.
+KIRO_CREDS_FILE="$CREDS_FILE"
 
 # Region hosting the Q API endpoint. Differs from your SSO region
 # (${SSO_REGION:-unknown}) when the subscription lives elsewhere.
 KIRO_API_REGION="$API_REGION"
 
-# CodeWhisperer profile ARN. Not returned by the SSO OIDC refresh flow, so it
-# must be set explicitly. Read from Kiro IDE logs by setup.sh.
+# Amazon Q Developer profile discovered through ListAvailableProfiles or,
+# for the legacy Kiro IDE path, recovered from existing local logs.
 PROFILE_ARN="$PROFILE_ARN"
 
 # Debug logging: off | errors | all

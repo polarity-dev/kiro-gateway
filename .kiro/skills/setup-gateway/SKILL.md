@@ -1,6 +1,6 @@
 ---
 name: setup-gateway
-description: Set up Kiro Gateway + Claude Code on the user's machine from a fresh clone. Checks/installs Claude Code, runs the gateway installer, starts the server, verifies end to end, and offers to install two global skills (kiro-credits for live subscription usage, enable-claude-code for converting Kiro repos to dual-mode). Use when the user asks to "set up kiro-gateway", "set up Claude Code", "get me running", "configura il gateway", "installami claude code", or opens this repo for the first time and wants it working. macOS + Enterprise/IdC (Kiro IDE).
+description: Set up Kiro Gateway + Claude Code from a fresh clone using an AWS IAM Identity Center profile, without requiring Kiro IDE or Kiro CLI. Runs device login, discovers the Amazon Q profile, starts the server, verifies end to end, and offers optional global skills.
 ---
 
 # Set up Kiro Gateway + Claude Code
@@ -16,17 +16,17 @@ improvise a different flow.
 
 ## Flow (summary — full detail in the runbook)
 
-0. **Preconditions.** macOS (`uname` → `Darwin`), Python 3.10+, Kiro IDE logged
-   in (`~/.aws/sso/cache/kiro-auth-token.json` exists), and at least one message
-   sent in Kiro IDE (so the `profileArn` is in its logs). If one fails, tell the
-   user how to fix it and stop.
+0. **Preconditions.** macOS/Linux, Python 3.10+, an AWS shared-config profile
+   with IAM Identity Center `sso_start_url` and `sso_region`, and an assigned
+   Amazon Q Developer subscription/profile. Kiro IDE and Kiro CLI are not needed.
 1. **Claude Code.** `claude --version`; if missing,
    `curl -fsSL https://claude.ai/install.sh | bash`, then re-check.
-2. **Gateway installer.** `./setup.sh -y` (non-interactive; writes `.env`,
-   discovers Kiro's live catalog, and atomically synchronizes
+2. **Gateway installer.** Ask for the AWS profile name, then run
+   `./setup.sh -y --aws-profile NAME`. Device approval remains interactive. The
+   installer writes `.env`, discovers the Q profile and live catalog, and atomically synchronizes
    `~/.claude/settings.json`). The generated non-empty `availableModels` string
    list plus `enforceAvailableModels: true` hides Claude Code's built-in rows.
-3. **Start gateway.** `python3 main.py` (foreground, `localhost:8000`).
+3. **Start gateway.** `python3 main.py` (foreground, `localhost:4567`).
 4. **Verify.** Compare authenticated `/v1/models` with `availableModels`, then
    have the user run `claude` in a new terminal and confirm `/model` contains
    only Default plus rows labelled `From gateway`.
@@ -146,5 +146,5 @@ If they decline, leave it — purely cosmetic, changes nothing functionally.
 
 - Never commit secrets. `.env`, `credentials.json`, `state.json` are gitignored.
 - Never hand-edit `profileArn` / `KIRO_API_REGION`; they come from `setup.sh`.
-- Prefer `./setup.sh -y` over manual configuration — it is the single source of
-  truth and is safe to re-run.
+- Prefer `./setup.sh -y --aws-profile NAME` over manual configuration — it is
+  the single source of truth and is safe to re-run.

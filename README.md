@@ -54,64 +54,72 @@ automatically; Claude Code, Cursor, and Codex pick it up from `CLAUDE.md` / `AGE
 
 ### 🛠️ Manual path
 
-**If you sign in to Kiro IDE with an AWS IAM Identity Center user (your own or your
-organization's), use this path.** It replaces the manual [Configuration](#%EF%B8%8F-configuration)
-steps below.
+**AWS IAM Identity Center users can bootstrap the gateway without installing Kiro IDE or Kiro CLI.**
+The only interactive step is approving the standard device authorization code in a browser.
+
+First ensure your AWS CLI config contains an SSO profile (modern `sso_session` and legacy inline
+SSO settings are both supported), then run:
 
 ```bash
 git clone https://github.com/polarity-dev/kiro-gateway.git
 cd kiro-gateway
-./setup.sh              # add -y for non-interactive (AI agents / CI)
+./setup.sh --aws-profile company   # use your AWS CLI profile name
 python3 main.py
 ```
 
-Then run `claude` from any terminal. No environment exports needed.
+Add `-y` to accept setup prompts automatically. Browser approval is still required. If your user
+has multiple Amazon Q Developer profiles, select one by name or ARN:
 
-> **Prerequisite:** [Claude Code](https://code.claude.com/docs/en/setup) must be installed. Check
-> with `claude --version`; if missing, install with `curl -fsSL https://claude.ai/install.sh | bash`.
+```bash
+./setup.sh -y --aws-profile company --q-profile Engineering
+```
+
+Then run `claude` from any terminal. No environment exports or Kiro installation are needed.
+
+> **Prerequisites:** Python 3.10+, an AWS CLI profile containing `sso_start_url` and `sso_region`
+> (directly or through `sso_session`), an assigned Amazon Q Developer subscription/profile, and
+> [Claude Code](https://code.claude.com/docs/en/setup).
 
 ### What setup.sh does
 
-Enterprise accounts need two values that cannot be discovered automatically by the upstream code.
-The installer resolves both:
+With `--aws-profile`, the installer:
 
-| Value | How it is obtained | Why it is needed |
-|-------|--------------------|------------------|
-| `PROFILE_ARN` | Read from Kiro IDE logs at `~/Library/Application Support/Kiro/logs/*/exthost/kiro.kiroAgent/q-client.log` | The AWS SSO OIDC refresh flow never returns it, and `ListAvailableProfiles` returns an empty list for Enterprise accounts. The profile ID is an opaque string that cannot be derived from your AWS account settings. |
-| `KIRO_API_REGION` | Parsed from the region field of the discovered ARN | Your SSO region (where you log in) and your subscription's API region are usually different. DNS probing is unreliable because several `runtime.*.kiro.dev` hosts resolve regardless of where your subscription lives. |
+1. registers a public AWS SSO OIDC client with the Amazon Q scopes;
+2. starts device authorization and asks you to approve the code in a browser;
+3. obtains refreshable OIDC credentials;
+4. calls the bearer-authenticated `ListAvailableProfiles` operation in the supported Q regions;
+5. stores the selected `profileArn`, SSO region, and API region in an owner-only (`0600`)
+   credential file at `~/.aws/sso/cache/kiro-gateway-auth.json`;
+6. generates a random `PROXY_API_KEY`, writes `.env`, and atomically synchronizes Claude Code.
 
-It also generates a random `PROXY_API_KEY`, writes `.env`, and atomically merges
-Claude Code settings. Setup discovers Kiro's current catalog directly, writes its
-exact display IDs as a non-empty `availableModels` string list, and enables
-`enforceAvailableModels` so built-in Claude Code model rows stay hidden. Existing
-unrelated settings and a still-valid selected model are preserved.
+The SSO region and Q API region are stored separately because they commonly differ. The generated
+credential file is refreshed directly by the gateway; Kiro IDE and Kiro CLI are not involved.
 
-The script is safe to re-run: it backs up `.env` to `.env.bak` and prompts before
-overwriting anything.
+Running `./setup.sh` without `--aws-profile` preserves the legacy path that reuses an existing
+Kiro IDE credential file and, when necessary, recovers `profileArn` from its logs.
 
-### Requirements
-
-- macOS with [Kiro IDE](https://kiro.dev/) installed and signed in with your AWS IAM Identity Center user
-- Python 3.10+
-- At least one message sent in Kiro IDE, so the `profileArn` appears in its logs
+The script is safe to re-run: it backs up `.env` to `.env.bak` and prompts before overwriting it.
 
 ### Troubleshooting
 
-**`Could not find profileArn in Kiro IDE logs`**
-Send a message in Kiro IDE, then re-run `./setup.sh`. Kiro only writes the ARN once it has
-made an API call. You can also paste the ARN manually when prompted.
+**`AWS profile '…' was not found` / missing SSO settings**
+Configure the named profile in `~/.aws/config` with `sso_session`, or with inline `sso_start_url`
+and `sso_region`, then retry.
+
+**`This IAM Identity Center user has no Amazon Q Developer profiles`**
+Ask the AWS administrator to assign the Amazon Q Developer subscription and profile to the user,
+then retry after the assignment has propagated.
+
+**`Multiple Q Developer profiles are available`**
+Re-run with `--q-profile NAME_OR_ARN` using one of the choices printed by the command.
 
 **`runtime.<region>.kiro.dev does not resolve`**
 Your network is blocking the endpoint. Set `VPN_PROXY_URL` in `.env` — see
 [VPN/Proxy Support](#-vpnproxy-support).
 
-**`403 User is not authorized to make this call`**
-The Kiro API rejects requests without a recognised `User-Agent`. The gateway sends a valid one,
-so this usually means you are calling the API directly rather than through the gateway.
-
 **Claude Code opens a browser login page**
-`ANTHROPIC_AUTH_TOKEN` must be set, not `ANTHROPIC_API_KEY`. Only the former bypasses the
-interactive OAuth flow. `setup.sh` configures this correctly.
+`ANTHROPIC_AUTH_TOKEN` must be set, not `ANTHROPIC_API_KEY`. Only the former bypasses Claude
+Code's own OAuth flow. `setup.sh` configures this correctly.
 
 ### Shell helper (optional)
 
@@ -126,7 +134,7 @@ kiro-gateway() {
   local gw_dir="$HOME/repo/kiro-gateway"   # adjust to your clone location
   local port
   port=$(grep -m1 '^SERVER_PORT=' "$gw_dir/.env" 2>/dev/null | cut -d'"' -f2)
-  (cd "$gw_dir" && python3 main.py --port "${port:-8000}")
+  (cd "$gw_dir" && python3 main.py --port "${port:-4567}")
 }
 ```
 
@@ -141,7 +149,7 @@ If you prefer environment variables over the settings file, export these instead
 apply only to the shell you set them in:
 
 ```bash
-export ANTHROPIC_BASE_URL="http://localhost:8000"
+export ANTHROPIC_BASE_URL="http://localhost:4567"
 export ANTHROPIC_AUTH_TOKEN="<your PROXY_API_KEY from .env>"
 ```
 
@@ -151,7 +159,7 @@ Model discovery is enabled by `setup.sh`, so `/model` inside Claude Code lists t
 subscription grants, labelled `From gateway`. To inspect them directly:
 
 ```bash
-curl -s localhost:8000/v1/models -H "Authorization: Bearer $PROXY_API_KEY" \
+curl -s localhost:4567/v1/models -H "Authorization: Bearer $PROXY_API_KEY" \
   | python3 -c "import sys,json; print('\n'.join(m['id'] for m in json.load(sys.stdin)['data']))"
 ```
 
@@ -267,11 +275,11 @@ cp .env.example .env
 # Start the server
 python main.py
 
-# Or with custom port (if 8000 is busy)
+# Or with custom port (if 4567 is busy)
 python main.py --port 9000
 ```
 
-The server will be available at `http://localhost:8000`
+The server will be available at `http://localhost:4567`
 
 ---
 
@@ -341,8 +349,8 @@ KIRO_CREDS_FILE="~/.aws/sso/cache/your-sso-cache-file.json"
 # Password to protect YOUR proxy server
 PROXY_API_KEY="my-super-secret-password-123"
 
-# Note: PROFILE_ARN is NOT needed for AWS SSO (Builder ID and corporate accounts)
-# The gateway will work without it
+# Enterprise profileArn is discovered automatically by scripts/kiro_login.py.
+# Legacy files that omit it may require PROFILE_ARN in .env.
 ```
 
 <details>
@@ -361,7 +369,7 @@ AWS SSO credentials files (from `~/.aws/sso/cache/`) contain:
 }
 ```
 
-**Note:** AWS SSO (Builder ID and corporate accounts) users do NOT need `profileArn`. The gateway will work without it (if specified, it will be ignored).
+**Note:** direct Enterprise bootstrap discovers `profileArn` automatically. Builder ID accounts may not have an Enterprise profile ARN; legacy corporate files that omit it may require `PROFILE_ARN` in `.env`.
 
 </details>
 
@@ -390,8 +398,8 @@ KIRO_CLI_DB_FILE="~/.local/share/kiro-cli/data.sqlite3"
 # Password to protect YOUR proxy server
 PROXY_API_KEY="my-super-secret-password-123"
 
-# Note: PROFILE_ARN is NOT needed for AWS SSO (Builder ID and corporate accounts)
-# The gateway will work without it
+# Enterprise profileArn is discovered automatically by scripts/kiro_login.py.
+# Legacy files that omit it may require PROFILE_ARN in .env.
 ```
 
 <details>
@@ -527,7 +535,7 @@ docker-compose up -d
 
 # 3. Check status
 docker-compose logs -f
-curl http://localhost:8000/health
+curl http://localhost:4567/health
 ```
 
 ### Docker Run (Without Compose)
@@ -537,7 +545,7 @@ curl http://localhost:8000/health
 
 ```bash
 docker run -d \
-  -p 8000:8000 \
+  -p 4567:4567 \
   -e PROXY_API_KEY="my-super-secret-password-123" \
   -e REFRESH_TOKEN="your_refresh_token" \
   --name kiro-gateway \
@@ -552,7 +560,7 @@ docker run -d \
 **Linux/macOS:**
 ```bash
 docker run -d \
-  -p 8000:8000 \
+  -p 4567:4567 \
   -v ~/.aws/sso/cache:/home/kiro/.aws/sso/cache:ro \
   -e KIRO_CREDS_FILE=/home/kiro/.aws/sso/cache/kiro-auth-token.json \
   -e PROXY_API_KEY="my-super-secret-password-123" \
@@ -563,7 +571,7 @@ docker run -d \
 **Windows (PowerShell):**
 ```powershell
 docker run -d `
-  -p 8000:8000 `
+  -p 4567:4567 `
   -v ${HOME}/.aws/sso/cache:/home/kiro/.aws/sso/cache:ro `
   -e KIRO_CREDS_FILE=/home/kiro/.aws/sso/cache/kiro-auth-token.json `
   -e PROXY_API_KEY="my-super-secret-password-123" `
@@ -577,7 +585,7 @@ docker run -d `
 <summary>🔹 Using .env File</summary>
 
 ```bash
-docker run -d -p 8000:8000 --env-file .env --name kiro-gateway ghcr.io/jwadow/kiro-gateway:latest
+docker run -d -p 4567:4567 --env-file .env --name kiro-gateway ghcr.io/jwadow/kiro-gateway:latest
 ```
 
 </details>
@@ -614,7 +622,7 @@ docker-compose pull && docker-compose up -d  # Update
 
 ```bash
 docker build -t kiro-gateway .
-docker run -d -p 8000:8000 --env-file .env kiro-gateway
+docker run -d -p 4567:4567 --env-file .env kiro-gateway
 ```
 
 </details>
@@ -696,7 +704,7 @@ Leave `VPN_PROXY_URL` empty (default) if you don't need proxy support.
 <summary>🔹 Simple cURL Request</summary>
 
 ```bash
-curl http://localhost:8000/v1/chat/completions \
+curl http://localhost:4567/v1/chat/completions \
   -H "Authorization: Bearer my-super-secret-password-123" \
   -H "Content-Type: application/json" \
   -d '{
@@ -714,7 +722,7 @@ curl http://localhost:8000/v1/chat/completions \
 <summary>🔹 Streaming Request</summary>
 
 ```bash
-curl http://localhost:8000/v1/chat/completions \
+curl http://localhost:4567/v1/chat/completions \
   -H "Authorization: Bearer my-super-secret-password-123" \
   -H "Content-Type: application/json" \
   -d '{
@@ -733,7 +741,7 @@ curl http://localhost:8000/v1/chat/completions \
 <summary>🛠️ With Tool Calling</summary>
 
 ```bash
-curl http://localhost:8000/v1/chat/completions \
+curl http://localhost:4567/v1/chat/completions \
   -H "Authorization: Bearer my-super-secret-password-123" \
   -H "Content-Type: application/json" \
   -d '{
@@ -765,7 +773,7 @@ curl http://localhost:8000/v1/chat/completions \
 from openai import OpenAI
 
 client = OpenAI(
-    base_url="http://localhost:8000/v1",
+    base_url="http://localhost:4567/v1",
     api_key="my-super-secret-password-123"  # Your PROXY_API_KEY from .env
 )
 
@@ -792,7 +800,7 @@ for chunk in response:
 from langchain_openai import ChatOpenAI
 
 llm = ChatOpenAI(
-    base_url="http://localhost:8000/v1",
+    base_url="http://localhost:4567/v1",
     api_key="my-super-secret-password-123",  # Your PROXY_API_KEY from .env
     model="claude-sonnet-4-5"
 )
@@ -809,7 +817,7 @@ print(response.content)
 <summary>🔹 Simple cURL Request</summary>
 
 ```bash
-curl http://localhost:8000/v1/messages \
+curl http://localhost:4567/v1/messages \
   -H "x-api-key: my-super-secret-password-123" \
   -H "anthropic-version: 2023-06-01" \
   -H "Content-Type: application/json" \
@@ -828,7 +836,7 @@ curl http://localhost:8000/v1/messages \
 <summary>🔹 With System Prompt</summary>
 
 ```bash
-curl http://localhost:8000/v1/messages \
+curl http://localhost:4567/v1/messages \
   -H "x-api-key: my-super-secret-password-123" \
   -H "anthropic-version: 2023-06-01" \
   -H "Content-Type: application/json" \
@@ -848,7 +856,7 @@ curl http://localhost:8000/v1/messages \
 <summary>📡 Streaming</summary>
 
 ```bash
-curl http://localhost:8000/v1/messages \
+curl http://localhost:4567/v1/messages \
   -H "x-api-key: my-super-secret-password-123" \
   -H "anthropic-version: 2023-06-01" \
   -H "Content-Type: application/json" \
@@ -870,7 +878,7 @@ import anthropic
 
 client = anthropic.Anthropic(
     api_key="my-super-secret-password-123",  # Your PROXY_API_KEY from .env
-    base_url="http://localhost:8000"
+    base_url="http://localhost:4567"
 )
 
 # Non-streaming

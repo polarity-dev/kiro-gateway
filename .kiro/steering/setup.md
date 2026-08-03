@@ -19,13 +19,14 @@ Enterprise/IdC quirks.
 
 ## Who this is for
 
-Anyone on **macOS** who signs in to Kiro IDE with an AWS IAM Identity Center
-user (Enterprise / IdC) and has **Kiro IDE installed and logged in**. The
-gateway then reuses Kiro IDE's own credentials — the user never pastes a token.
+Anyone with an **AWS IAM Identity Center** profile whose user has an assigned
+Amazon Q Developer subscription/profile. Kiro IDE and Kiro CLI are not required:
+the gateway performs the standard device authorization flow itself and discovers
+the assigned Q profile through `ListAvailableProfiles`.
 
-If the user is not on macOS, stop and tell them the automated path is macOS-only
-today; point them at the manual [Configuration](../../README.md#-configuration)
-section of the README.
+The setup script targets macOS and Linux. On other platforms, use the direct
+`python3 scripts/kiro_login.py --aws-profile NAME` command and follow the manual
+[Configuration](../../README.md#-configuration) section.
 
 ## The runbook
 
@@ -38,14 +39,14 @@ as you go — the user may not know the internals.
 Verify all of these before touching anything. If one fails, tell the user how to
 fix it and stop.
 
-- **macOS.** Run `uname` — it must print `Darwin`.
+- **macOS or Linux.** Run `uname` and confirm a supported Unix environment.
 - **Python 3.10+.** Run `python3 --version`.
-- **Kiro IDE installed and logged in.** Check that
-  `~/.aws/sso/cache/kiro-auth-token.json` exists.
-- **At least one message sent in Kiro IDE.** This is what makes Kiro write the
-  `profileArn` into its logs. If the user has never used Kiro IDE, ask them to
-  send one message (anything) in it first — the installer cannot proceed without
-  the ARN.
+- **AWS shared config.** Ask which AWS CLI profile to use, then verify it exists
+  in `~/.aws/config` and defines `sso_start_url` plus `sso_region`, either directly
+  or through an `sso_session` section. AWS CLI itself does not need to be installed.
+- **Amazon Q assignment.** The user's Identity Center identity must have an
+  assigned Amazon Q Developer subscription/profile. If discovery returns no
+  profiles, an AWS administrator must assign it before setup can continue.
 
 ### Step 1 — Ensure Claude Code is installed
 
@@ -74,24 +75,26 @@ auto-updates itself.
 
 ### Step 2 — Run the gateway installer
 
-From the repo root:
+Ask the user which AWS CLI profile contains their IAM Identity Center settings,
+then run from the repo root:
 
 ```bash
-./setup.sh -y
+./setup.sh -y --aws-profile NAME
 ```
 
-The `-y` flag runs it non-interactively so you (the agent) don't hang on
-prompts. This single script:
+The `-y` flag accepts ordinary setup prompts. Device authorization still requires
+the user to approve the displayed code in their browser. This single script:
 
 - Installs Python dependencies from `requirements.txt` if missing.
-- Locates the Kiro credentials file.
-- Extracts the CodeWhisperer `profileArn` from Kiro IDE logs (the SSO refresh
-  flow never returns it, so this is the only way to get it).
-- Resolves the correct `KIRO_API_REGION` from the ARN (the API region usually
-  differs from the SSO login region).
+- Reads the profile's `sso_start_url` and `sso_region` from `~/.aws/config`.
+- Registers a public AWS SSO OIDC client and completes device authorization.
+- Discovers the user's Amazon Q Developer `profileArn` with the bearer-authenticated
+  `ListAvailableProfiles` operation in each supported Q region.
+- Separately records the SSO region and Q API region in an owner-only credential
+  file at `~/.aws/sso/cache/kiro-gateway-auth.json`.
 - Generates a random `PROXY_API_KEY` and writes `.env`.
 - Configures `~/.claude/settings.json` atomically: points Claude Code at
-  `http://localhost:8000` with `ANTHROPIC_AUTH_TOKEN`, enables gateway model
+  `http://localhost:4567` with `ANTHROPIC_AUTH_TOKEN`, enables gateway model
   discovery, and synchronizes Kiro's live display IDs into a non-empty
   `availableModels` string list with `enforceAvailableModels: true`. This hides
   Claude Code's built-in model rows across model-selection surfaces. The
@@ -102,14 +105,16 @@ prompts. This single script:
   gateway row. A legacy `ANTHROPIC_MODEL` is removed because it outranks and
   prevents persisted `/model` choices.
 
-**If it fails with `Could not find profileArn`:** the user has not sent a
-message in Kiro IDE yet, or Kiro hasn't logged one. Ask them to send a message
-in Kiro IDE, then re-run `./setup.sh -y`.
+**If multiple Q profiles are reported:** rerun with
+`--q-profile NAME_OR_ARN`, using one of the choices printed by the command.
+
+**If no Q profile is reported:** an AWS administrator must assign the Amazon Q
+Developer subscription/profile to that Identity Center user. Retry after the
+assignment has propagated.
 
 **Never** write `.env`, `~/.claude/settings.json`, or the `profileArn`/region
-by hand as a shortcut — the script's discovery logic exists precisely because
-those values cannot be guessed. If the script fails, fix the precondition it
-reports and re-run it.
+by hand as a shortcut. If the script fails, fix the precondition it reports and
+re-run it.
 
 ### Step 3 — Start the gateway
 
@@ -119,8 +124,8 @@ The gateway is a foreground server. Start it in its own terminal:
 python3 main.py
 ```
 
-It listens on `http://localhost:8000`. Leave it running — Claude Code talks to
-it. If port 8000 is busy, use `python3 main.py --port 9000` and update
+It listens on `http://localhost:4567`. Leave it running — Claude Code talks to
+it. If port 4567 is busy, use `python3 main.py --port 9000` and update
 `ANTHROPIC_BASE_URL` in `~/.claude/settings.json` to match.
 
 Because the config lives in `~/.claude/settings.json` (not shell exports), the
@@ -134,7 +139,7 @@ With the gateway running, confirm the two hops work:
 
 ```bash
 # 1. Gateway is up and authenticated — lists the models your subscription grants
-curl -s localhost:8000/v1/models -H "Authorization: Bearer $(grep -m1 '^PROXY_API_KEY=' .env | cut -d'"' -f2)" \
+curl -s localhost:4567/v1/models -H "Authorization: Bearer $(grep -m1 '^PROXY_API_KEY=' .env | cut -d'"' -f2)" \
   | python3 -c "import sys,json; print('\n'.join(m['id'] for m in json.load(sys.stdin)['data']))"
 ```
 
@@ -310,11 +315,13 @@ Tell the user, in plain language:
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| `Could not find profileArn in Kiro IDE logs` | No message sent in Kiro IDE yet | Send one message in Kiro IDE, re-run `./setup.sh -y` |
-| Claude Code opens a browser login page | `ANTHROPIC_API_KEY` set instead of `ANTHROPIC_AUTH_TOKEN` | Re-run `./setup.sh -y`; it sets the correct one |
+| `AWS profile '…' was not found` | Wrong profile name or missing `~/.aws/config` entry | Choose a configured profile and rerun with `--aws-profile NAME` |
+| `This IAM Identity Center user has no Amazon Q Developer profiles` | Subscription/profile not assigned or not propagated | Ask the AWS administrator to assign it, then retry |
+| `Multiple Q Developer profiles are available` | More than one profile is assigned | Rerun with `--q-profile NAME_OR_ARN` |
+| Claude Code opens a browser login page | `ANTHROPIC_API_KEY` set instead of `ANTHROPIC_AUTH_TOKEN` | Re-run `./setup.sh -y --aws-profile NAME`; it sets the correct one |
 | `runtime.<region>.kiro.dev does not resolve` | Network blocking the endpoint | Set `VPN_PROXY_URL` in `.env` (see README → VPN/Proxy Support) |
-| `403 User is not authorized` | Calling Kiro API directly, not through gateway | Point the client at `localhost:8000`, not at Kiro |
-| Port 8000 already in use | Another process on 8000 | `python3 main.py --port 9000` and update `ANTHROPIC_BASE_URL` |
+| `403 User is not authorized` | Calling Kiro API directly, not through gateway | Point the client at `localhost:4567`, not at Kiro |
+| Port 4567 already in use | Another process on 4567 | `python3 main.py --port 9000` and update `ANTHROPIC_BASE_URL` |
 
 ## Non-negotiables
 
@@ -323,5 +330,5 @@ Tell the user, in plain language:
   are tracked by git, into commit messages, or into chat.
 - **Do not hand-edit discovered values.** `profileArn` and `KIRO_API_REGION`
   come from `setup.sh`. If it can't find them, fix the precondition, don't guess.
-- **Prefer `./setup.sh -y` over manual steps.** It is the single source of truth
-  for configuration and is safe to re-run (it backs up `.env` to `.env.bak`).
+- **Prefer `./setup.sh -y --aws-profile NAME` over manual steps.** It is the
+  single source of truth and is safe to re-run (it backs up `.env` to `.env.bak`).

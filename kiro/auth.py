@@ -392,9 +392,11 @@ class KiroAuthManager:
         - region: AWS region
         - expiresAt: Token expiration time (ISO 8601)
         
-        Additional fields for AWS SSO OIDC (kiro-cli):
+        Additional fields for AWS SSO OIDC (kiro-cli or direct bootstrap):
         - clientId: OAuth client ID
         - clientSecret: OAuth client secret
+        - apiRegion: Q Developer API region, separate from the SSO region
+        - scopes: OAuth scopes granted to the registered client
         
         For Enterprise Kiro IDE:
         - clientIdHash: Hash of client ID (Enterprise Kiro IDE)
@@ -421,11 +423,16 @@ class KiroAuthManager:
             if 'profileArn' in data:
                 self._profile_arn = data['profileArn']
             if 'region' in data:
-                # Store as SSO region for OIDC token refresh
+                # The JSON region is the IAM Identity Center/OIDC region.
                 self._sso_region = data['region']
-                # Also use as detected API region (can be overridden by KIRO_API_REGION env var)
+                logger.debug(f"SSO region from JSON credentials: {data['region']}")
+            if 'apiRegion' in data:
+                # Direct bootstrap records the Q Developer region separately.
+                self._detected_api_region = data['apiRegion']
+                logger.debug(f"API region from JSON credentials: {data['apiRegion']}")
+            elif 'region' in data:
+                # Preserve compatibility with existing Kiro credential files.
                 self._detected_api_region = data['region']
-                logger.debug(f"Region from JSON credentials: {data['region']}")
             
             # Load clientIdHash and device registration for Enterprise Kiro IDE
             if 'clientIdHash' in data:
@@ -437,7 +444,9 @@ class KiroAuthManager:
                 self._client_id = data['clientId']
             if 'clientSecret' in data:
                 self._client_secret = data['clientSecret']
-            
+            if 'scopes' in data and isinstance(data['scopes'], list):
+                self._scopes = data['scopes']
+
             # Parse expiresAt
             if 'expiresAt' in data:
                 try:
