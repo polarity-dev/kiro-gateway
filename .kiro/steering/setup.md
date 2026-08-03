@@ -97,7 +97,9 @@ prompts. This single script:
   Claude Code's built-in model rows across model-selection surfaces. The
   top-level `model` selection is preserved by underlying Kiro `modelId` when
   metadata changes; a removed selection falls back to the real `auto` row when
-  available. A legacy `ANTHROPIC_MODEL` is removed because it outranks and
+  available. The virtual **Default** row is also mapped from the account's Haiku
+  tier to **Kiro Auto**, while Haiku remains separately selectable through its
+  gateway row. A legacy `ANTHROPIC_MODEL` is removed because it outranks and
   prevents persisted `/model` choices.
 
 **If it fails with `Could not find profileArn`:** the user has not sent a

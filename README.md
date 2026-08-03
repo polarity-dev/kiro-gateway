@@ -155,9 +155,12 @@ curl -s localhost:8000/v1/models -H "Authorization: Bearer $PROXY_API_KEY" \
   | python3 -c "import sys,json; print('\n'.join(m['id'] for m in json.load(sys.stdin)['data']))"
 ```
 
-Choose a persistent default with `/model` or the top-level `model` setting. Do not
-set `ANTHROPIC_MODEL`: it has higher precedence and overrides the saved picker choice.
-When Kiro adds or removes models, refresh the static local allowlist with:
+The synchronizer selects Kiro's `auto` router and maps Claude Code's virtual
+**Default** row to **Kiro Auto**. Haiku remains separately selectable through its
+explicit gateway row. Choose any other persistent model with `/model` or the
+top-level `model` setting. Do not set `ANTHROPIC_MODEL`: it has higher precedence
+and overrides the saved picker choice. When Kiro adds or removes models, refresh
+the static local allowlist with:
 
 ```bash
 python3 scripts/sync_claude_models.py sync

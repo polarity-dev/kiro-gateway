@@ -29,7 +29,9 @@ exact gateway display IDs as a non-empty `string[]`, sets
 `enforceAvailableModels: true`, and updates `model` only when needed. If rate or
 context metadata changed, the selection follows the same underlying Kiro
 `modelId`; if the model disappeared, it prefers the real `auto` entry when
-present, otherwise the first sorted allowed ID.
+present, otherwise the first sorted allowed ID. When `auto` exists, the command
+also maps Claude Code's virtual Default/Haiku tier to **Kiro Auto** while keeping
+the explicit Haiku gateway row selectable.
 
 The command never writes an enforced empty list. Malformed settings or a total
 lack of safe catalog sources return an error and leave the file untouched.

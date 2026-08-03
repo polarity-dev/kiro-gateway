@@ -19,6 +19,13 @@ class ClaudeSettingsError(RuntimeError):
     """Raised when Claude Code settings cannot be safely read or updated."""
 
 
+_DEFAULT_MODEL_ENV_KEYS = (
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION",
+)
+
+
 @dataclass(frozen=True)
 class ModelPolicyMerge:
     """Result of applying the gateway model policy to Claude Code settings."""
@@ -122,6 +129,27 @@ def merge_model_policy(
         raise ClaudeSettingsError("Claude setting 'env' must be a JSON object")
     env = dict(existing_env)
     env.pop("ANTHROPIC_MODEL", None)
+    auto_model = next(
+        (
+            model_id
+            for model_id in normalized
+            if parse_model_display_id(model_id) == "auto"
+        ),
+        None,
+    )
+    if auto_model:
+        env.update(
+            {
+                "ANTHROPIC_DEFAULT_HAIKU_MODEL": auto_model,
+                "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME": "Kiro Auto",
+                "ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION": (
+                    "Kiro server-side automatic model routing"
+                ),
+            }
+        )
+    else:
+        for key in _DEFAULT_MODEL_ENV_KEYS:
+            env.pop(key, None)
     if env or "env" in merged:
         merged["env"] = env
 

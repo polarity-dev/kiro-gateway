@@ -91,6 +91,30 @@ def test_merge_policy_prefers_real_auto_when_selection_disappears() -> None:
     )
 
     assert result.selected_model == auto
+    assert result.settings["env"] == {
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL": auto,
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME": "Kiro Auto",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION": (
+            "Kiro server-side automatic model routing"
+        ),
+    }
+
+
+def test_merge_policy_removes_stale_auto_default_when_auto_is_absent() -> None:
+    """A retired auto router cannot remain as Claude Code's virtual Default."""
+    result = merge_model_policy(
+        {
+            "env": {
+                "KEEP": "yes",
+                "ANTHROPIC_DEFAULT_HAIKU_MODEL": "retired-auto",
+                "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME": "Kiro Auto",
+                "ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION": "old",
+            }
+        },
+        ["claude-haiku-4.5"],
+    )
+
+    assert result.settings["env"] == {"KEEP": "yes"}
 
 
 def test_merge_policy_uses_first_sorted_model_when_auto_is_absent() -> None:
