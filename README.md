@@ -54,72 +54,50 @@ automatically; Claude Code, Cursor, and Codex pick it up from `CLAUDE.md` / `AGE
 
 ### 🛠️ Manual path
 
-**AWS IAM Identity Center users can bootstrap the gateway without installing Kiro IDE or Kiro CLI.**
-The only interactive step is approving the standard device authorization code in a browser.
-
-First ensure your AWS CLI config contains an SSO profile (modern `sso_session` and legacy inline
-SSO settings are both supported), then run:
+**AWS IAM Identity Center users can bootstrap the gateway without Kiro IDE or Kiro CLI.**
+Configure an AWS shared-config profile with `sso_start_url` and `sso_region` (directly or through
+`sso_session`), then run:
 
 ```bash
 git clone https://github.com/polarity-dev/kiro-gateway.git
 cd kiro-gateway
-./setup.sh --aws-profile company   # use your AWS CLI profile name
+./setup.sh --aws-profile company
 python3 main.py
 ```
 
-Add `-y` to accept setup prompts automatically. Browser approval is still required. If your user
-has multiple Amazon Q Developer profiles, select one by name or ARN:
-
-```bash
-./setup.sh -y --aws-profile company --q-profile Engineering
-```
-
-Then run `claude` from any terminal. No environment exports or Kiro installation are needed.
-
-> **Prerequisites:** Python 3.10+, an AWS CLI profile containing `sso_start_url` and `sso_region`
-> (directly or through `sso_session`), an assigned Amazon Q Developer subscription/profile, and
-> [Claude Code](https://code.claude.com/docs/en/setup).
+Add `-y` to accept setup prompts; browser device approval is still required. With multiple Q
+profiles, add `--q-profile NAME_OR_ARN`. A custom first-setup port can be combined with
+`--port PORT`.
 
 ### What setup.sh does
 
-With `--aws-profile`, the installer:
+With `--aws-profile`, setup registers a public AWS SSO OIDC client, completes device authorization,
+discovers the assigned Amazon Q Developer profile through bearer-authenticated
+`ListAvailableProfiles`, and writes refreshable owner-only (`0600`) credentials to
+`~/.aws/sso/cache/kiro-gateway-auth.json`. It stores the SSO and Q API regions separately,
+generates `.env`, and atomically synchronizes Claude Code and the selected gateway port.
 
-1. registers a public AWS SSO OIDC client with the Amazon Q scopes;
-2. starts device authorization and asks you to approve the code in a browser;
-3. obtains refreshable OIDC credentials;
-4. calls the bearer-authenticated `ListAvailableProfiles` operation in the supported Q regions;
-5. stores the selected `profileArn`, SSO region, and API region in an owner-only (`0600`)
-   credential file at `~/.aws/sso/cache/kiro-gateway-auth.json`;
-6. generates a random `PROXY_API_KEY`, writes `.env`, and atomically synchronizes Claude Code.
+Running without `--aws-profile` preserves the legacy Kiro IDE credential/log path. Existing
+credential and `.env` files are never replaced without confirmation; `.env` is backed up first.
 
-The SSO region and Q API region are stored separately because they commonly differ. The generated
-credential file is refreshed directly by the gateway; Kiro IDE and Kiro CLI are not involved.
+### Requirements
 
-Running `./setup.sh` without `--aws-profile` preserves the legacy path that reuses an existing
-Kiro IDE credential file and, when necessary, recovers `profileArn` from its logs.
-
-The script is safe to re-run: it backs up `.env` to `.env.bak` and prompts before overwriting it.
+- Python 3.10+
+- an AWS shared-config IAM Identity Center profile
+- an assigned Amazon Q Developer subscription/profile
+- Claude Code
 
 ### Troubleshooting
 
-**`AWS profile '…' was not found` / missing SSO settings**
-Configure the named profile in `~/.aws/config` with `sso_session`, or with inline `sso_start_url`
-and `sso_region`, then retry.
+**No Q Developer profiles** — ask the AWS administrator to assign the subscription/profile and
+retry after propagation.
 
-**`This IAM Identity Center user has no Amazon Q Developer profiles`**
-Ask the AWS administrator to assign the Amazon Q Developer subscription and profile to the user,
-then retry after the assignment has propagated.
+**Multiple Q Developer profiles** — rerun with `--q-profile NAME_OR_ARN`.
 
-**`Multiple Q Developer profiles are available`**
-Re-run with `--q-profile NAME_OR_ARN` using one of the choices printed by the command.
+**`runtime.<region>.kiro.dev does not resolve`** — configure `VPN_PROXY_URL` in `.env`.
 
-**`runtime.<region>.kiro.dev does not resolve`**
-Your network is blocking the endpoint. Set `VPN_PROXY_URL` in `.env` — see
-[VPN/Proxy Support](#-vpnproxy-support).
-
-**Claude Code opens a browser login page**
-`ANTHROPIC_AUTH_TOKEN` must be set, not `ANTHROPIC_API_KEY`. Only the former bypasses Claude
-Code's own OAuth flow. `setup.sh` configures this correctly.
+**Claude Code opens a browser login page** — rerun setup; it configures
+`ANTHROPIC_AUTH_TOKEN`, not `ANTHROPIC_API_KEY`.
 
 ### Shell helper (optional)
 
@@ -132,13 +110,49 @@ Add this to `~/.zshrc` to avoid typing the path each time:
 # Kiro Gateway
 kiro-gateway() {
   local gw_dir="$HOME/repo/kiro-gateway"   # adjust to your clone location
-  local port
-  port=$(grep -m1 '^SERVER_PORT=' "$gw_dir/.env" 2>/dev/null | cut -d'"' -f2)
-  (cd "$gw_dir" && python3 main.py --port "${port:-4567}")
+  (cd "$gw_dir" && python3 main.py)
 }
 ```
 
-Then `kiro-gateway` starts it in the foreground; stop it with Ctrl+C.
+Then `kiro-gateway` starts it in the foreground; stop it with Ctrl+C. Do not add
+`--port` or a `SERVER_PORT=...` assignment to the helper: `main.py` reads the
+persisted port from this checkout's `.env`, so the helper automatically follows
+future port changes.
+
+### Choosing or changing the gateway port
+
+`.env` is the persisted source of truth for the gateway port. The installer uses
+the same value for the server runtime and Claude Code's `ANTHROPIC_BASE_URL`.
+
+For a first setup on a custom port:
+
+```bash
+./setup.sh --port 9000
+```
+
+To change the port after setup is already complete:
+
+```bash
+./setup.sh --port 9100
+```
+
+The existing-installation path changes only `SERVER_PORT` and the managed Claude
+Code connection values. It reuses the current proxy token, preserves unrelated
+Claude settings, and backs up `.env` to `.env.bak`.
+
+Complete this checklist one step at a time:
+
+1. Run `./setup.sh --port <new-port>` and resolve any reported zsh helper drift.
+2. Stop the running gateway with Ctrl+C.
+3. Start it again with `python3 main.py` or the port-neutral `kiro-gateway` helper.
+4. Open a new Claude Code session so it reloads `~/.claude/settings.json`.
+5. Run `./setup.sh --check-port`; it must report the runtime, Claude Code, and
+   optional zsh helper as aligned.
+
+Do not use `python3 main.py --port N` for a persistent change: that is a transient
+runtime override and cannot update Claude Code. Also remove any exported
+`SERVER_PORT` from the launching shell (`unset SERVER_PORT`), because shell
+environment variables override `.env`.
 
 > **Why no `export` lines?** Environment variables do not cross terminal sessions, so exporting
 > them in the window running the gateway would not reach the window running `claude`. Putting them
@@ -149,7 +163,7 @@ If you prefer environment variables over the settings file, export these instead
 apply only to the shell you set them in:
 
 ```bash
-export ANTHROPIC_BASE_URL="http://localhost:4567"
+export ANTHROPIC_BASE_URL="http://localhost:$(python3 scripts/manage_gateway_port.py resolve)"
 export ANTHROPIC_AUTH_TOKEN="<your PROXY_API_KEY from .env>"
 ```
 
@@ -159,7 +173,8 @@ Model discovery is enabled by `setup.sh`, so `/model` inside Claude Code lists t
 subscription grants, labelled `From gateway`. To inspect them directly:
 
 ```bash
-curl -s localhost:4567/v1/models -H "Authorization: Bearer $PROXY_API_KEY" \
+PORT=$(python3 scripts/manage_gateway_port.py resolve)
+curl -s "localhost:$PORT/v1/models" -H "Authorization: Bearer $PROXY_API_KEY" \
   | python3 -c "import sys,json; print('\n'.join(m['id'] for m in json.load(sys.stdin)['data']))"
 ```
 
@@ -349,8 +364,8 @@ KIRO_CREDS_FILE="~/.aws/sso/cache/your-sso-cache-file.json"
 # Password to protect YOUR proxy server
 PROXY_API_KEY="my-super-secret-password-123"
 
-# Enterprise profileArn is discovered automatically by scripts/kiro_login.py.
-# Legacy files that omit it may require PROFILE_ARN in .env.
+# Note: PROFILE_ARN is NOT needed for AWS SSO (Builder ID and corporate accounts)
+# The gateway will work without it
 ```
 
 <details>
@@ -369,7 +384,7 @@ AWS SSO credentials files (from `~/.aws/sso/cache/`) contain:
 }
 ```
 
-**Note:** direct Enterprise bootstrap discovers `profileArn` automatically. Builder ID accounts may not have an Enterprise profile ARN; legacy corporate files that omit it may require `PROFILE_ARN` in `.env`.
+**Note:** AWS SSO (Builder ID and corporate accounts) users do NOT need `profileArn`. The gateway will work without it (if specified, it will be ignored).
 
 </details>
 
@@ -398,8 +413,8 @@ KIRO_CLI_DB_FILE="~/.local/share/kiro-cli/data.sqlite3"
 # Password to protect YOUR proxy server
 PROXY_API_KEY="my-super-secret-password-123"
 
-# Enterprise profileArn is discovered automatically by scripts/kiro_login.py.
-# Legacy files that omit it may require PROFILE_ARN in .env.
+# Note: PROFILE_ARN is NOT needed for AWS SSO (Builder ID and corporate accounts)
+# The gateway will work without it
 ```
 
 <details>

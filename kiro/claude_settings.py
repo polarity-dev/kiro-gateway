@@ -5,13 +5,11 @@
 from __future__ import annotations
 
 import json
-import os
-import stat
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 
+from kiro.atomic_io import AtomicWriteError, write_text_atomic
 from kiro.model_resolver import parse_model_display_id
 
 
@@ -165,6 +163,32 @@ def merge_model_policy(
     )
 
 
+def merge_gateway_base_url(
+    settings: Dict[str, Any],
+    base_url: str,
+) -> Dict[str, Any]:
+    """Update only the managed gateway URL while preserving all other policy.
+
+    Args:
+        settings: Existing settings object. It is not mutated.
+        base_url: Local gateway URL.
+
+    Returns:
+        Updated settings object.
+
+    Raises:
+        ClaudeSettingsError: If the existing ``env`` value is not an object.
+    """
+    merged = dict(settings)
+    existing_env = merged.get("env", {})
+    if not isinstance(existing_env, dict):
+        raise ClaudeSettingsError("Claude setting 'env' must be a JSON object")
+    env = dict(existing_env)
+    env["ANTHROPIC_BASE_URL"] = base_url
+    merged["env"] = env
+    return merged
+
+
 def merge_gateway_connection(
     settings: Dict[str, Any],
     base_url: str,
@@ -249,41 +273,9 @@ def write_claude_settings_atomic(path: Path, settings: Dict[str, Any]) -> bool:
     Raises:
         ClaudeSettingsError: If the destination cannot be written atomically.
     """
-    rendered = render_claude_settings(settings)
     try:
-        if path.is_symlink():
-            target_path = path.resolve(strict=True)
-        else:
-            target_path = path
-        current = target_path.read_text(encoding="utf-8") if target_path.exists() else None
-    except (OSError, UnicodeDecodeError) as exc:
-        raise ClaudeSettingsError(f"Cannot read Claude settings from {path}: {exc}") from exc
-    if current == rendered:
-        return False
-
-    temporary_path: Optional[Path] = None
-    try:
-        target_path.parent.mkdir(parents=True, exist_ok=True)
-        existing_mode = (
-            stat.S_IMODE(target_path.stat().st_mode) if target_path.exists() else 0o600
-        )
-        descriptor, temporary_name = tempfile.mkstemp(
-            prefix=f".{target_path.name}.", suffix=".tmp", dir=target_path.parent
-        )
-        temporary_path = Path(temporary_name)
-        os.fchmod(descriptor, existing_mode)
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            handle.write(rendered)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary_path, target_path)
-        temporary_path = None
-        return True
-    except OSError as exc:
-        raise ClaudeSettingsError(f"Cannot atomically write Claude settings to {path}: {exc}") from exc
-    finally:
-        if temporary_path is not None:
-            try:
-                temporary_path.unlink(missing_ok=True)
-            except OSError:
-                pass
+        return write_text_atomic(path, render_claude_settings(settings))
+    except AtomicWriteError as exc:
+        raise ClaudeSettingsError(
+            f"Cannot atomically write Claude settings to {path}: {exc}"
+        ) from exc

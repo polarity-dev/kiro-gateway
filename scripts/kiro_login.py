@@ -66,6 +66,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print the verification URL without opening a browser",
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Replace an existing credential output file",
+    )
     return parser
 
 
@@ -87,6 +92,11 @@ async def login(
         IdcBootstrapError: If configuration, login, discovery, or persistence fails.
         httpx.HTTPError: If an unexpected transport failure occurs.
     """
+    output = args.output.expanduser()
+    if output.exists() and not getattr(args, "force", False):
+        raise IdcBootstrapError(
+            f"Credential output already exists: {output}. Pass --force to replace it."
+        )
     sso_profile = load_aws_sso_profile(args.aws_profile, args.aws_config)
     owns_client = client is None
     http_client = client or httpx.AsyncClient(timeout=httpx.Timeout(30.0))
@@ -111,7 +121,6 @@ async def login(
         credentials = build_credentials(
             sso_profile, registration, token, q_profile
         )
-        output = args.output.expanduser()
         write_credentials(output, credentials)
         print(f"Authenticated as Q Developer profile: {q_profile.profile_name}")
         print(f"API region: {q_profile.region}")

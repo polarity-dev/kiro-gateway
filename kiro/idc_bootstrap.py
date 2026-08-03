@@ -142,6 +142,17 @@ def _validate_region(region: str, source: str) -> str:
     return value
 
 
+def _profile_region_from_arn(arn: str) -> str:
+    """Extract and validate the service region embedded in a profile ARN."""
+    parts = arn.split(":")
+    if len(parts) < 6 or parts[0] != "arn" or parts[2] not in {"codewhisperer", "transform"}:
+        raise ProfileDiscoveryError(f"ListAvailableProfiles returned an invalid profile ARN: {arn!r}")
+    region = parts[3]
+    if not _REGION_PATTERN.fullmatch(region):
+        raise ProfileDiscoveryError(f"ListAvailableProfiles returned an invalid profile ARN region: {arn!r}")
+    return region
+
+
 def _validate_start_url(start_url: str, source: str) -> str:
     """Validate and normalize an IAM Identity Center start URL.
 
@@ -470,7 +481,7 @@ async def list_available_profiles(
                         QDeveloperProfile(
                             arn=arn,
                             profile_name=name,
-                            region=region,
+                            region=_profile_region_from_arn(arn),
                             description=description if isinstance(description, str) else None,
                         )
                     )

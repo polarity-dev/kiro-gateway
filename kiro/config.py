@@ -27,9 +27,11 @@ Loads environment variables and provides typed access to them.
 import os
 from pathlib import Path
 from typing import Dict, List
+
 from dotenv import load_dotenv
 
 from kiro.dotenv_utils import read_raw_dotenv_value
+from kiro.server_config import DEFAULT_SERVER_HOST, DEFAULT_SERVER_PORT, validate_port
 
 # Load only this checkout's environment. Searching parent directories can leak
 # credentials and region overrides from a different checkout into worktrees.
@@ -46,14 +48,12 @@ load_dotenv(_REPO_ENV_FILE)
 
 # Server host (default: 0.0.0.0 - listen on all interfaces)
 # Use "127.0.0.1" to only allow local connections
-DEFAULT_SERVER_HOST: str = "0.0.0.0"
 SERVER_HOST: str = os.getenv("SERVER_HOST", DEFAULT_SERVER_HOST)
 
 # Server port (default: 4567)
 # Can be overridden by CLI: python main.py --port 9000
 # Or by uvicorn directly: uvicorn main:app --port 9000
-DEFAULT_SERVER_PORT: int = 4567
-SERVER_PORT: int = int(os.getenv("SERVER_PORT", str(DEFAULT_SERVER_PORT)))
+SERVER_PORT: int = validate_port(os.getenv("SERVER_PORT", str(DEFAULT_SERVER_PORT)))
 
 # ==================================================================================================
 # Proxy Server Settings

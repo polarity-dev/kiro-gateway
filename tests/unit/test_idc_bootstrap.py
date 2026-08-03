@@ -32,6 +32,13 @@ from kiro.idc_bootstrap import (
 )
 
 
+US_ARN_ONE = "arn:aws:codewhisperer:us-east-1:123456789012:profile/abcdefghijkl"
+US_ARN_TWO = "arn:aws:codewhisperer:us-east-1:123456789012:profile/mnopqrstuvwx"
+US_ARN_PARTIAL = "arn:aws:codewhisperer:us-east-1:123456789012:profile/partialprof1"
+EU_ARN_COMPLETE = "arn:aws:codewhisperer:eu-central-1:123456789012:profile/completeprof"
+EU_ARN = "arn:aws:codewhisperer:eu-central-1:123456789012:profile/europeprofil"
+
+
 class StubAsyncClient:
     """Minimal async HTTP client that never touches the network."""
 
@@ -308,24 +315,25 @@ class TestProfileDiscovery:
                 return httpx.Response(
                     200,
                     json={
-                        "profiles": [{"arn": "arn:one", "profileName": "One"}],
+                        "profiles": [{"arn": US_ARN_ONE, "profileName": "One"}],
                         "nextToken": "page-2",
                     },
                 )
             if request.url.host == "q.us-east-1.amazonaws.com":
                 return httpx.Response(
                     200,
-                    json={"profiles": [{"arn": "arn:two", "profileName": "Two"}]},
+                    json={"profiles": [{"arn": US_ARN_TWO, "profileName": "Two"}]},
                 )
             return httpx.Response(
                 200,
-                json={"profiles": [{"arn": "arn:one", "profileName": "One"}]},
+                json={"profiles": [{"arn": US_ARN_ONE, "profileName": "One"}]},
             )
 
         async with _async_client(handler) as client:
             profiles = await list_available_profiles("access-token", client)
 
-        assert [profile.arn for profile in profiles] == ["arn:one", "arn:two"]
+        assert [profile.arn for profile in profiles] == [US_ARN_ONE, US_ARN_TWO]
+        assert profiles[0].region == "us-east-1"
         assert all(request.headers["authorization"] == "Bearer access-token" for request in requests)
         assert all(
             request.headers["x-amz-target"]
@@ -344,20 +352,20 @@ class TestProfileDiscovery:
                     return httpx.Response(
                         200,
                         json={
-                            "profiles": [{"arn": "arn:partial", "profileName": "Partial"}],
+                            "profiles": [{"arn": US_ARN_PARTIAL, "profileName": "Partial"}],
                             "nextToken": "next",
                         },
                     )
                 return httpx.Response(503, json={"__type": "InternalServerException"})
             return httpx.Response(
                 200,
-                json={"profiles": [{"arn": "arn:complete", "profileName": "Complete"}]},
+                json={"profiles": [{"arn": EU_ARN_COMPLETE, "profileName": "Complete"}]},
             )
 
         async with _async_client(handler) as client:
             profiles = await list_available_profiles("access-token", client)
 
-        assert profiles == [QDeveloperProfile("arn:complete", "Complete", "eu-central-1")]
+        assert profiles == [QDeveloperProfile(EU_ARN_COMPLETE, "Complete", "eu-central-1")]
 
     @pytest.mark.asyncio
     async def test_tolerates_one_failed_region_when_another_has_profiles(self) -> None:
@@ -367,13 +375,13 @@ class TestProfileDiscovery:
                 return httpx.Response(503, json={"__type": "InternalServerException"})
             return httpx.Response(
                 200,
-                json={"profiles": [{"arn": "arn:eu", "profileName": "Europe"}]},
+                json={"profiles": [{"arn": EU_ARN, "profileName": "Europe"}]},
             )
 
         async with _async_client(handler) as client:
             profiles = await list_available_profiles("access-token", client)
 
-        assert profiles == [QDeveloperProfile("arn:eu", "Europe", "eu-central-1")]
+        assert profiles == [QDeveloperProfile(EU_ARN, "Europe", "eu-central-1")]
 
     @pytest.mark.asyncio
     async def test_reports_missing_subscription_when_all_regions_are_empty(self) -> None:

@@ -12,7 +12,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from kiro.idc_bootstrap import OidcToken, SsoOidcDeviceClient
+from kiro.idc_bootstrap import IdcBootstrapError, OidcToken, SsoOidcDeviceClient
 from scripts.kiro_login import login
 
 
@@ -87,6 +87,7 @@ async def test_login_writes_gateway_credentials_without_kiro(
         q_profile=None,
         output=output,
         no_browser=True,
+        force=False,
     )
     client = StubAsyncClient()
 
@@ -112,3 +113,33 @@ async def test_login_writes_gateway_credentials_without_kiro(
     ]
     assert len(profile_requests) == 2
     assert all(request.headers["authorization"] == "Bearer access-token" for request in profile_requests)
+
+
+@pytest.mark.asyncio
+async def test_login_refuses_existing_output_before_network(
+    tmp_path: Path,
+) -> None:
+    """Existing credentials require explicit --force before any OIDC request."""
+    aws_config = tmp_path / "aws-config"
+    aws_config.write_text(
+        "[default]\nsso_start_url=https://example.awsapps.com/start\n"
+        "sso_region=us-east-1\n",
+        encoding="utf-8",
+    )
+    output = tmp_path / "credentials.json"
+    output.write_text("original", encoding="utf-8")
+    args = argparse.Namespace(
+        aws_profile="default",
+        aws_config=aws_config,
+        q_profile=None,
+        output=output,
+        no_browser=True,
+        force=False,
+    )
+    client = StubAsyncClient()
+
+    with pytest.raises(IdcBootstrapError, match="--force"):
+        await login(args, client=client)
+
+    assert output.read_text(encoding="utf-8") == "original"
+    assert client.requests == []

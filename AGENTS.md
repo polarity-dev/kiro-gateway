@@ -7,8 +7,8 @@ This document provides essential information for AI agents (Claude, GPT, etc.) w
 > gateway + Claude Code on a user's machine, follow the setup runbook instead:
 > **[`.kiro/steering/setup.md`](.kiro/steering/setup.md)** (single source of
 > truth). The short version: `claude --version` (install with
-> `curl -fsSL https://claude.ai/install.sh | bash` if missing) → `./setup.sh -y`
-> → `python3 main.py` → verify.
+> `curl -fsSL https://claude.ai/install.sh | bash` if missing) →
+> `./setup.sh -y --aws-profile NAME` → `python3 main.py` → verify.
 
 ## Project Philosophy
 
@@ -560,9 +560,14 @@ DEBUG_MODE="off"  # or "errors" or "all"
 
 ### Configuration Priority
 
-1. CLI arguments: `python main.py --port 9000`
+1. CLI arguments: `python main.py --port 9000` (temporary runtime override)
 2. Environment variables: `SERVER_PORT=9000`
 3. Default values: `4567`
+
+For a persistent port change that keeps Claude Code aligned, use
+`./setup.sh --port 9000`, restart the gateway and Claude Code, then run
+`./setup.sh --check-port`. The optional zsh helper must invoke
+`python3 main.py` without its own port override.
 
 ## Important Patterns and Gotchas
 

@@ -54,6 +54,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 
+from kiro.server_config import validate_port
 from kiro.config import (
     APP_TITLE,
     APP_DESCRIPTION,
@@ -627,7 +628,7 @@ Examples:
     
     parser.add_argument(
         "-p", "--port",
-        type=int,
+        type=validate_port,
         default=None,  # None means "use env or default"
         metavar="PORT",
         help=f"Server port (default: {DEFAULT_SERVER_PORT}, env: SERVER_PORT)"

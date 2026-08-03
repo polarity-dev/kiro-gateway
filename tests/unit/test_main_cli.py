@@ -149,9 +149,9 @@ class TestResolveServerConfig:
         print("Action: Calling resolve_server_config with CLI args...")
         # Even if env vars are set, CLI should win
         with patch('main.SERVER_HOST', '0.0.0.0'), \
-             patch('main.SERVER_PORT', 8000), \
+             patch('main.SERVER_PORT', 4567), \
              patch('main.DEFAULT_SERVER_HOST', '0.0.0.0'), \
-             patch('main.DEFAULT_SERVER_PORT', 8000):
+             patch('main.DEFAULT_SERVER_PORT', 4567):
             host, port = resolve_server_config(args)
         
         print(f"Resolved host: {host}")
@@ -176,7 +176,7 @@ class TestResolveServerConfig:
         with patch('main.SERVER_HOST', '192.168.1.100'), \
              patch('main.SERVER_PORT', 3000), \
              patch('main.DEFAULT_SERVER_HOST', '0.0.0.0'), \
-             patch('main.DEFAULT_SERVER_PORT', 8000):
+             patch('main.DEFAULT_SERVER_PORT', 4567):
             host, port = resolve_server_config(args)
         
         print(f"Resolved host: {host}")
@@ -199,16 +199,16 @@ class TestResolveServerConfig:
         print("Action: Calling resolve_server_config with defaults...")
         # SERVER_HOST and SERVER_PORT equal to defaults (no env override)
         with patch('main.SERVER_HOST', '0.0.0.0'), \
-             patch('main.SERVER_PORT', 8000), \
+             patch('main.SERVER_PORT', 4567), \
              patch('main.DEFAULT_SERVER_HOST', '0.0.0.0'), \
-             patch('main.DEFAULT_SERVER_PORT', 8000):
+             patch('main.DEFAULT_SERVER_PORT', 4567):
             host, port = resolve_server_config(args)
         
         print(f"Resolved host: {host}")
         print(f"Resolved port: {port}")
-        print(f"Comparing: Expected ('0.0.0.0', 8000)")
+        print(f"Comparing: Expected ('0.0.0.0', 4567)")
         assert host == "0.0.0.0"
-        assert port == 8000
+        assert port == 4567
     
     def test_cli_host_only_env_port(self):
         """
@@ -225,7 +225,7 @@ class TestResolveServerConfig:
         with patch('main.SERVER_HOST', '0.0.0.0'), \
              patch('main.SERVER_PORT', 9000), \
              patch('main.DEFAULT_SERVER_HOST', '0.0.0.0'), \
-             patch('main.DEFAULT_SERVER_PORT', 8000):
+             patch('main.DEFAULT_SERVER_PORT', 4567):
             host, port = resolve_server_config(args)
         
         print(f"Resolved host: {host}")
@@ -247,9 +247,9 @@ class TestResolveServerConfig:
         
         print("Action: Calling resolve_server_config...")
         with patch('main.SERVER_HOST', '192.168.1.1'), \
-             patch('main.SERVER_PORT', 8000), \
+             patch('main.SERVER_PORT', 4567), \
              patch('main.DEFAULT_SERVER_HOST', '0.0.0.0'), \
-             patch('main.DEFAULT_SERVER_PORT', 8000):
+             patch('main.DEFAULT_SERVER_PORT', 4567):
             host, port = resolve_server_config(args)
         
         print(f"Resolved host: {host}")
@@ -270,14 +270,14 @@ class TestPrintStartupBanner:
         print("Setup: Importing print_startup_banner...")
         from main import print_startup_banner
         
-        print("Action: Calling print_startup_banner('0.0.0.0', 8000)...")
-        print_startup_banner("0.0.0.0", 8000)
+        print("Action: Calling print_startup_banner('0.0.0.0', 4567)...")
+        print_startup_banner("0.0.0.0", 4567)
         
         captured = capsys.readouterr()
         print(f"Captured output length: {len(captured.out)}")
         
         # When host is 0.0.0.0, display should show localhost
-        assert "localhost:8000" in captured.out or "8000" in captured.out
+        assert "localhost:4567" in captured.out or "4567" in captured.out
     
     def test_banner_contains_custom_port(self, capsys):
         """
@@ -303,8 +303,8 @@ class TestPrintStartupBanner:
         print("Setup: Importing print_startup_banner...")
         from main import print_startup_banner
         
-        print("Action: Calling print_startup_banner('0.0.0.0', 8000)...")
-        print_startup_banner("0.0.0.0", 8000)
+        print("Action: Calling print_startup_banner('0.0.0.0', 4567)...")
+        print_startup_banner("0.0.0.0", 4567)
         
         captured = capsys.readouterr()
         print(f"Captured output contains '/docs': {'/docs' in captured.out}")
@@ -319,8 +319,8 @@ class TestPrintStartupBanner:
         print("Setup: Importing print_startup_banner...")
         from main import print_startup_banner
         
-        print("Action: Calling print_startup_banner('0.0.0.0', 8000)...")
-        print_startup_banner("0.0.0.0", 8000)
+        print("Action: Calling print_startup_banner('0.0.0.0', 4567)...")
+        print_startup_banner("0.0.0.0", 4567)
         
         captured = capsys.readouterr()
         print(f"Captured output contains '/health': {'/health' in captured.out}")

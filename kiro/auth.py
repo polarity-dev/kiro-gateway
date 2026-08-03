@@ -48,6 +48,7 @@ from kiro.config import (
     get_kiro_q_host,
     get_aws_sso_oidc_url,
 )
+from kiro.atomic_io import AtomicWriteError, write_text_atomic
 from kiro.utils import get_machine_fingerprint
 
 
@@ -513,21 +514,30 @@ class KiroAuthManager:
                 with open(path, 'r', encoding='utf-8') as f:
                     existing_data = json.load(f)
             
-            # Update data
+            # Update data while preserving bootstrap metadata needed after restart.
             existing_data['accessToken'] = self._access_token
             existing_data['refreshToken'] = self._refresh_token
             if self._expires_at:
                 existing_data['expiresAt'] = self._expires_at.isoformat()
             if self._profile_arn:
                 existing_data['profileArn'] = self._profile_arn
-            
-            # Save
-            with open(path, 'w', encoding='utf-8') as f:
-                json.dump(existing_data, f, indent=2, ensure_ascii=False)
-            
-            logger.debug(f"Credentials saved to {self._creds_file}")
-            
-        except Exception as e:
+            if self._client_id:
+                existing_data['clientId'] = self._client_id
+            if self._client_secret:
+                existing_data['clientSecret'] = self._client_secret
+            if self._sso_region:
+                existing_data['region'] = self._sso_region
+            if self._detected_api_region:
+                existing_data['apiRegion'] = self._detected_api_region
+            if self._scopes:
+                existing_data['scopes'] = self._scopes
+
+            content = json.dumps(existing_data, indent=2, ensure_ascii=False) + "\n"
+            write_text_atomic(path, content, default_mode=0o600, preserve_mode=False)
+            path.chmod(0o600)
+            logger.debug(f"Credentials saved atomically to {self._creds_file}")
+
+        except (AtomicWriteError, OSError, json.JSONDecodeError) as e:
             logger.error(f"Error saving credentials: {e}")
     
     def _save_credentials_to_sqlite(self) -> None:

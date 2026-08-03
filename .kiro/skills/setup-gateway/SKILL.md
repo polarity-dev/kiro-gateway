@@ -1,6 +1,6 @@
 ---
 name: setup-gateway
-description: Set up Kiro Gateway + Claude Code from a fresh clone using an AWS IAM Identity Center profile, without requiring Kiro IDE or Kiro CLI. Runs device login, discovers the Amazon Q profile, starts the server, verifies end to end, and offers optional global skills.
+description: Set up Kiro Gateway + Claude Code from a fresh clone using AWS IAM Identity Center, without requiring Kiro IDE or Kiro CLI. Runs device login, discovers the Amazon Q profile, synchronizes the gateway port and Claude Code, verifies end to end, and offers optional global skills.
 ---
 
 # Set up Kiro Gateway + Claude Code
@@ -17,17 +17,21 @@ improvise a different flow.
 ## Flow (summary — full detail in the runbook)
 
 0. **Preconditions.** macOS/Linux, Python 3.10+, an AWS shared-config profile
-   with IAM Identity Center `sso_start_url` and `sso_region`, and an assigned
-   Amazon Q Developer subscription/profile. Kiro IDE and Kiro CLI are not needed.
+   containing IAM Identity Center `sso_start_url` and `sso_region`, and an
+   assigned Amazon Q Developer subscription/profile.
 1. **Claude Code.** `claude --version`; if missing,
    `curl -fsSL https://claude.ai/install.sh | bash`, then re-check.
 2. **Gateway installer.** Ask for the AWS profile name, then run
-   `./setup.sh -y --aws-profile NAME`. Device approval remains interactive. The
-   installer writes `.env`, discovers the Q profile and live catalog, and atomically synchronizes
-   `~/.claude/settings.json`). The generated non-empty `availableModels` string
-   list plus `enforceAvailableModels: true` hides Claude Code's built-in rows.
-3. **Start gateway.** `python3 main.py` (foreground, `localhost:4567`).
-4. **Verify.** Compare authenticated `/v1/models` with `availableModels`, then
+   `./setup.sh -y --aws-profile NAME` (add `--port PORT` when requested).
+   Browser device approval remains interactive. Setup writes `.env`, discovers
+   the Q profile and live catalog, and atomically synchronizes
+   `~/.claude/settings.json`. The generated non-empty
+   `availableModels` string list plus `enforceAvailableModels: true` hides Claude
+   Code's built-in rows.
+3. **Start gateway.** `python3 main.py` (foreground; reads `SERVER_PORT` from
+   `.env`, default `4567`).
+4. **Verify.** Run `./setup.sh --check-port`, compare authenticated `/v1/models`
+   with `availableModels`, then
    have the user run `claude` in a new terminal and confirm `/model` contains
    only Default plus rows labelled `From gateway`.
 5. **Offer the `kiro-credits` skill globally** — check live Kiro credits from
@@ -36,6 +40,20 @@ improvise a different flow.
    into a dual-mode Kiro+Claude Code repo. Also symlink into both dirs, so
    the user can run it from any repo in either IDE (see below).
 7. **Offer to remove the Claude commit attribution.** See below.
+
+## Changing or checking the port
+
+Use `.env` as the only persistent source of truth:
+
+- First setup with a custom port: `./setup.sh -y --aws-profile NAME --port PORT`.
+- Existing setup: `./setup.sh --port PORT`; this preserves credentials and
+  unrelated Claude settings, then prints a restart checklist.
+- Read-only verification: `./setup.sh --check-port`.
+
+Never fix a persistent mismatch by editing only `ANTHROPIC_BASE_URL` or by adding
+`--port` to the zsh helper. The helper must run `python3 main.py` without a port
+override so it follows `.env`. After changing the port, stop and restart the
+running gateway, open a new Claude Code session, then run the check command.
 
 ## Step 5 — Offer to install the kiro-credits skill globally
 

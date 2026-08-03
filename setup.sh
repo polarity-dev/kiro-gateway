@@ -1,15 +1,14 @@
 #!/usr/bin/env bash
 #
-# Kiro Gateway - Interactive setup for AWS IAM Identity Center users.
+# Kiro Gateway - setup for AWS IAM Identity Center users.
 #
-# Preferred path: --aws-profile performs AWS SSO OIDC device authorization and
-# discovers the assigned Amazon Q Developer profile without Kiro IDE or Kiro CLI.
-# With no --aws-profile, the legacy Kiro IDE credential/log discovery remains
-# available for existing installations.
+# --aws-profile performs AWS SSO OIDC device authorization and discovers the
+# assigned Amazon Q Developer profile without Kiro IDE or Kiro CLI. Without it,
+# the legacy Kiro IDE credential/log path remains available.
 #
-# Safe to re-run: prompts before overwriting anything.
-# Pass -y/--yes to accept setup prompts; device authorization still requires the
-# user to approve the displayed code in their browser.
+# Pass -y/--yes to accept setup prompts; browser device approval is still
+# required. Use --port PORT to persist a custom port or --check-port to verify
+# that the gateway, Claude Code, and the optional zsh helper stay aligned.
 
 set -euo pipefail
 
@@ -20,7 +19,10 @@ DIRECT_CREDS_FILE="$HOME/.aws/sso/cache/kiro-gateway-auth.json"
 CREDS_FILE="$LEGACY_CREDS_FILE"
 KIRO_LOGS="$HOME/Library/Application Support/Kiro/logs"
 CLAUDE_SETTINGS="$HOME/.claude/settings.json"
-PORT="4567"
+PORT=""
+REQUESTED_PORT=""
+PORT_REQUESTED=0
+CHECK_PORT=0
 AWS_PROFILE_NAME=""
 Q_PROFILE_SELECTOR=""
 
@@ -41,8 +43,8 @@ ask() {
   esac
 }
 
-# Non-interactive mode accepts setup prompts. IAM Identity Center device login
-# still requires browser approval, and multiple Q profiles require --q-profile.
+# Non-interactive mode accepts setup prompts. Device authorization still needs
+# browser approval; multiple Q profiles require an explicit --q-profile.
 ASSUME_YES=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -51,31 +53,67 @@ while [ "$#" -gt 0 ]; do
       shift
       ;;
     --aws-profile)
-      [ "$#" -ge 2 ] || fail "--aws-profile requires a profile name"
+      [ "$#" -ge 2 ] && [ -n "$2" ] && [[ "$2" != -* ]] \
+        || fail "--aws-profile requires a profile name"
       AWS_PROFILE_NAME="$2"
       shift 2
       ;;
+    --aws-profile=*)
+      AWS_PROFILE_NAME="${1#*=}"
+      [ -n "$AWS_PROFILE_NAME" ] || fail "--aws-profile requires a profile name"
+      shift
+      ;;
     --q-profile)
-      [ "$#" -ge 2 ] || fail "--q-profile requires a profile name or ARN"
+      [ "$#" -ge 2 ] && [ -n "$2" ] && [[ "$2" != -* ]] \
+        || fail "--q-profile requires a profile name or ARN"
       Q_PROFILE_SELECTOR="$2"
       shift 2
+      ;;
+    --q-profile=*)
+      Q_PROFILE_SELECTOR="${1#*=}"
+      [ -n "$Q_PROFILE_SELECTOR" ] || fail "--q-profile requires a profile name or ARN"
+      shift
+      ;;
+    --port)
+      [ "$#" -ge 2 ] && [ -n "$2" ] && [[ "$2" != -* ]] \
+        || fail "--port requires a value (try --help)"
+      REQUESTED_PORT="$2"
+      PORT_REQUESTED=1
+      shift 2
+      ;;
+    --port=*)
+      REQUESTED_PORT="${1#*=}"
+      [ -n "$REQUESTED_PORT" ] || fail "--port requires a value (try --help)"
+      PORT_REQUESTED=1
+      shift
+      ;;
+    --check-port)
+      CHECK_PORT=1
+      shift
       ;;
     -h|--help)
       cat <<EOF
 Usage: $0 [-y|--yes] [--aws-profile NAME] [--q-profile NAME_OR_ARN]
+          [--port PORT] [--check-port]
 
-  --aws-profile NAME       Log in directly through the AWS CLI IdC profile.
-                           Kiro IDE and Kiro CLI are not required.
-  --q-profile NAME_OR_ARN  Select a Q Developer profile when more than one is assigned.
-  -y, --yes                Accept setup prompts. Browser approval is still required.
+  --aws-profile NAME       Log in directly through an AWS CLI IdC profile.
+  --q-profile NAME_OR_ARN  Select among multiple Q Developer profiles.
+  --port PORT              Persist a custom port (1-65535).
+  --check-port             Verify .env, Claude Code, and the optional zsh helper.
+  -y, --yes                Accept setup prompts; browser approval remains required.
 
-Without --aws-profile, setup uses existing Kiro IDE credentials and logs.
+Without --aws-profile, setup reuses existing Kiro IDE credentials.
 EOF
       exit 0
       ;;
     *) fail "Unknown argument: $1 (try --help)" ;;
   esac
 done
+
+[ -z "$Q_PROFILE_SELECTOR" ] || [ -n "$AWS_PROFILE_NAME" ] \
+  || fail "--q-profile requires --aws-profile"
+[ "$CHECK_PORT" -eq 0 ] || { [ -z "$AWS_PROFILE_NAME" ] && [ -z "$Q_PROFILE_SELECTOR" ]; } \
+  || fail "Use --check-port without authentication options"
 
 # ---------------------------------------------------------------------------
 step "1/7  Checking prerequisites"
@@ -89,19 +127,104 @@ if ! python3 -c 'import httpx, fastapi' 2>/dev/null; then
 fi
 ok "Python dependencies present"
 
+PORT_ARGS=(--env-file "$ENV_FILE" --settings "$CLAUDE_SETTINGS" --zshrc "$HOME/.zshrc")
+
+if [ "$CHECK_PORT" -eq 1 ]; then
+  [ "$PORT_REQUESTED" -eq 0 ] || fail "Use --check-port without --port"
+  python3 "$REPO_DIR/scripts/manage_gateway_port.py" "${PORT_ARGS[@]}" check
+  exit $?
+fi
+
+if [ "$PORT_REQUESTED" -eq 1 ]; then
+  PORT=$(python3 "$REPO_DIR/scripts/manage_gateway_port.py" "${PORT_ARGS[@]}" resolve --port "$REQUESTED_PORT") \
+    || fail "Invalid --port value: $REQUESTED_PORT"
+else
+  PORT=$(python3 "$REPO_DIR/scripts/manage_gateway_port.py" "${PORT_ARGS[@]}" resolve) \
+    || fail "Fix SERVER_PORT in $ENV_FILE, then re-run setup"
+fi
+
+# On a complete existing installation, --port is a focused, non-destructive
+# update. A partial .env continues through the full discovery/setup flow, while
+# malformed existing configuration fails closed instead of being overwritten.
+PORT_READY=1
+if [ "$PORT_REQUESTED" -eq 1 ]; then
+  if python3 "$REPO_DIR/scripts/manage_gateway_port.py" "${PORT_ARGS[@]}" ready; then
+    PORT_READY=0
+  else
+    PORT_READY=$?
+    [ "$PORT_READY" -eq 1 ] || fail "Existing port configuration is malformed; fix the reported error before setup"
+  fi
+fi
+if [ "$PORT_REQUESTED" -eq 1 ] && [ "$PORT_READY" -eq 0 ] && [ -z "$AWS_PROFILE_NAME" ]; then
+  step "Updating existing gateway port"
+  python3 "$REPO_DIR/scripts/manage_gateway_port.py" "${PORT_ARGS[@]}" set "$PORT" \
+    || fail "Port update failed; existing configuration was preserved"
+  ok "Gateway and Claude Code now use port $PORT"
+  cat <<EOF
+
+Restart checklist (complete one step at a time):
+  1. Stop the running gateway with Ctrl+C.
+  2. Start it again:  cd $REPO_DIR && python3 main.py
+  3. Open a new Claude Code session so it reloads ~/.claude/settings.json.
+  4. Verify alignment:  cd $REPO_DIR && ./setup.sh --check-port
+
+The recommended ~/.zshrc helper runs python3 main.py without --port, so it
+always follows SERVER_PORT from $ENV_FILE.
+EOF
+  if ! python3 "$REPO_DIR/scripts/manage_gateway_port.py" "${PORT_ARGS[@]}" check; then
+    fail "Port files were updated, but the optional zsh helper still needs the fix shown above"
+  fi
+  exit 0
+fi
+
+if [ ! -f "$ENV_FILE" ] && [ "$PORT_REQUESTED" -eq 0 ] && [ "$ASSUME_YES" -eq 0 ]; then
+  printf '  Gateway port [%s]: ' "$PORT"
+  read -r reply
+  if [ -n "$reply" ]; then
+    PORT=$(python3 "$REPO_DIR/scripts/manage_gateway_port.py" "${PORT_ARGS[@]}" resolve --port "$reply") \
+      || fail "Invalid port: $reply"
+  fi
+fi
+ok "Gateway port: $PORT"
+
+# Confirm all replacements before device login so cancellation leaves both the
+# old dotenv and old refresh credentials untouched.
+if [ -f "$ENV_FILE" ]; then
+  if [ "$ASSUME_YES" -eq 1 ]; then
+    reply="y"
+  else
+    printf '  .env already exists. Overwrite? [y/N] '
+    read -r reply
+  fi
+  case "$reply" in
+    [yY]) cp "$ENV_FILE" "$ENV_FILE.bak" && info "Backed up to .env.bak" ;;
+    *)    fail "Aborted without changing credentials or .env." ;;
+  esac
+fi
+
+LOGIN_FORCE_ARGS=()
+if [ -n "$AWS_PROFILE_NAME" ] && [ -e "$DIRECT_CREDS_FILE" ]; then
+  if [ "$ASSUME_YES" -eq 1 ]; then
+    reply="y"
+  else
+    printf '  Direct-login credentials already exist. Replace them? [y/N] '
+    read -r reply
+  fi
+  case "$reply" in
+    [yY]) LOGIN_FORCE_ARGS+=(--force) ;;
+    *)    fail "Aborted without changing credentials." ;;
+  esac
+fi
+
 # ---------------------------------------------------------------------------
 step "2/7  Obtaining Kiro credentials"
 
 if [ -n "$AWS_PROFILE_NAME" ]; then
   CREDS_FILE="$DIRECT_CREDS_FILE"
-  LOGIN_ARGS=(
-    --aws-profile "$AWS_PROFILE_NAME"
-    --output "$CREDS_FILE"
-  )
-  if [ -n "$Q_PROFILE_SELECTOR" ]; then
-    LOGIN_ARGS+=(--q-profile "$Q_PROFILE_SELECTOR")
-  fi
-  python3 "$REPO_DIR/scripts/kiro_login.py" "${LOGIN_ARGS[@]}" \
+  # kiro_login.py completes OIDC and bearer ListAvailableProfiles discovery.
+  LOGIN_ARGS=(--aws-profile "$AWS_PROFILE_NAME" --output "$CREDS_FILE")
+  [ -z "$Q_PROFILE_SELECTOR" ] || LOGIN_ARGS+=(--q-profile "$Q_PROFILE_SELECTOR")
+  python3 "$REPO_DIR/scripts/kiro_login.py" "${LOGIN_ARGS[@]}" "${LOGIN_FORCE_ARGS[@]}" \
     || fail "IAM Identity Center login failed. Review the message above and retry."
   ok "Direct IAM Identity Center credentials created"
 else
@@ -110,13 +233,11 @@ else
   ok "Existing Kiro IDE credentials found"
 fi
 
-# Read only non-secret metadata. The access and refresh tokens never enter shell
-# variables and are never printed by setup.sh.
+# Read only non-secret metadata. Tokens never enter shell variables or output.
 CREDENTIAL_METADATA=$(python3 - "$CREDS_FILE" <<'PY'
 import json
 import sys
 from pathlib import Path
-
 path = Path(sys.argv[1]).expanduser()
 with path.open(encoding="utf-8") as stream:
     data = json.load(stream)
@@ -136,37 +257,32 @@ ok "Credentials loaded (SSO region: ${SSO_REGION:-unknown})"
 # ---------------------------------------------------------------------------
 step "3/7  Resolving Q Developer profile"
 
-if [ -z "$PROFILE_ARN" ] && [ -z "$AWS_PROFILE_NAME" ]; then
-  # Legacy Kiro IDE fallback. Direct login obtains the ARN from the bearer
-  # ListAvailableProfiles API and never reads Kiro logs.
-  if [ -d "$KIRO_LOGS" ]; then
-    PROFILE_ARN=$(grep -rhao 'arn:aws:codewhisperer:[a-z0-9-]*:[0-9]*:profile/[A-Za-z0-9_-]*' \
-      "$KIRO_LOGS" 2>/dev/null | sort | uniq -c | sort -rn | head -1 | awk '{print $2}')
-  fi
+if [ -z "$PROFILE_ARN" ] && [ -z "$AWS_PROFILE_NAME" ] && [ -d "$KIRO_LOGS" ]; then
+  PROFILE_ARN=$(grep -rhao 'arn:aws:codewhisperer:[a-z0-9-]*:[0-9]*:profile/[A-Za-z0-9_-]*' \
+    "$KIRO_LOGS" 2>/dev/null | sort | uniq -c | sort -rn | head -1 | awk '{print $2}')
 fi
-
-if [ -z "$PROFILE_ARN" ]; then
-  fail "No Q Developer profile was discovered. Ask an administrator to assign one, then retry."
+if [ -z "$PROFILE_ARN" ] && [ -z "$AWS_PROFILE_NAME" ] && [ "$ASSUME_YES" -eq 0 ]; then
+  info "Could not recover profileArn from Kiro IDE logs."
+  printf '  profileArn (arn:aws:codewhisperer:REGION:ACCOUNT:profile/ID): '
+  read -r PROFILE_ARN
 fi
+[ -n "$PROFILE_ARN" ] || fail \
+  "No Q Developer profile was discovered. Assign one or provide a legacy profileArn."
 ok "Q Developer profile: $PROFILE_ARN"
 
 # ---------------------------------------------------------------------------
 step "4/7  Determining Q API region"
 
-# Direct login records the region returned by ListAvailableProfiles. Legacy Kiro
-# files fall back to the region field embedded in the profile ARN.
-if [ -z "$API_REGION" ]; then
-  API_REGION=$(printf '%s' "$PROFILE_ARN" | cut -d: -f4)
+ARN_REGION=$(printf '%s' "$PROFILE_ARN" | cut -d: -f4)
+[ -n "$ARN_REGION" ] || fail "Malformed profileArn: cannot read region from '$PROFILE_ARN'."
+if [ -n "$API_REGION" ] && [ "$API_REGION" != "$ARN_REGION" ]; then
+  warn "Credential API region $API_REGION disagrees with profile ARN; using $ARN_REGION."
 fi
-if [ -z "$API_REGION" ]; then
-  fail "Malformed profileArn: cannot read region from '$PROFILE_ARN'."
-fi
-
+API_REGION="$ARN_REGION"
 if command -v host >/dev/null 2>&1; then
   host "runtime.$API_REGION.kiro.dev" >/dev/null 2>&1 \
     || fail "runtime.$API_REGION.kiro.dev does not resolve. Check your network or VPN."
 fi
-
 if [ "$API_REGION" != "$SSO_REGION" ]; then
   info "API region ($API_REGION) differs from SSO region (${SSO_REGION:-unknown}) — expected."
 fi
@@ -175,42 +291,16 @@ ok "API region: $API_REGION"
 # ---------------------------------------------------------------------------
 step "5/7  Writing .env"
 
-if [ -f "$ENV_FILE" ]; then
-  if [ "$ASSUME_YES" -eq 1 ]; then
-    reply="y"
-  else
-    printf '  .env already exists. Overwrite? [y/N] '
-    read -r reply
-  fi
-  case "$reply" in
-    [yY]) cp "$ENV_FILE" "$ENV_FILE.bak" && info "Backed up to .env.bak" ;;
-    *)    fail "Aborted. Edit .env manually with the values shown above." ;;
-  esac
-fi
-
 PROXY_KEY=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')
-
 cat > "$ENV_FILE" <<EOF
 # Kiro Gateway configuration — generated by setup.sh
-
-# Password protecting THIS proxy. Used as the api_key by your clients.
 PROXY_API_KEY="$PROXY_KEY"
-
-# Credentials used and refreshed automatically by the gateway.
 KIRO_CREDS_FILE="$CREDS_FILE"
-
-# Region hosting the Q API endpoint. Differs from your SSO region
-# (${SSO_REGION:-unknown}) when the subscription lives elsewhere.
 KIRO_API_REGION="$API_REGION"
-
-# Amazon Q Developer profile discovered through ListAvailableProfiles or,
-# for the legacy Kiro IDE path, recovered from existing local logs.
 PROFILE_ARN="$PROFILE_ARN"
-
-# Debug logging: off | errors | all
+SERVER_PORT="$PORT"
 DEBUG_MODE=off
 EOF
-
 ok "Wrote $ENV_FILE"
 
 # ---------------------------------------------------------------------------
@@ -302,5 +392,13 @@ $(printf '\033[1mSetup complete.\033[0m')
 
   Available models:     curl -s localhost:$PORT/v1/models \\
                           -H "Authorization: Bearer \$PROXY_API_KEY"
+  Check port alignment: cd $REPO_DIR && ./setup.sh --check-port
+  Change port safely:   cd $REPO_DIR && ./setup.sh --port 9000
   Switch model:         /model inside Claude Code
 EOF
+
+if python3 "$REPO_DIR/scripts/manage_gateway_port.py" "${PORT_ARGS[@]}" check; then
+  ok "Gateway, Claude Code, and shell helper ports are aligned"
+else
+  warn "Setup finished, but port alignment needs attention; follow the check output above."
+fi
