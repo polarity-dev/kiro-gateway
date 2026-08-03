@@ -161,6 +161,7 @@ class TestRootEndpoint:
         
         print(f"Result: {response.json()}")
         assert response.status_code == 200
+        assert response.headers["X-Kiro-Gateway"] == "true"
         assert response.json()["status"] == "ok"
     
     def test_root_returns_gateway_message(self, test_client):
@@ -217,6 +218,7 @@ class TestHealthEndpoint:
         
         print(f"Result: {response.json()}")
         assert response.status_code == 200
+        assert response.headers["X-Kiro-Gateway"] == "true"
         assert response.json()["status"] == "healthy"
     
     def test_health_returns_timestamp(self, test_client):

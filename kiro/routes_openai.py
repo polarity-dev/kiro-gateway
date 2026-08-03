@@ -91,13 +91,16 @@ router = APIRouter()
 
 
 @router.get("/")
-async def root():
-    """
-    Health check endpoint.
-    
+async def root(response: Response) -> dict[str, str]:
+    """Return the gateway identity and application version.
+
+    Args:
+        response: FastAPI response used to attach the gateway identity header.
+
     Returns:
-        Status and application version
+        Status, gateway identity message, and application version.
     """
+    response.headers["X-Kiro-Gateway"] = "true"
     return {
         "status": "ok",
         "message": "Kiro Gateway is running",
@@ -106,13 +109,16 @@ async def root():
 
 
 @router.get("/health")
-async def health():
-    """
-    Detailed health check.
-    
+async def health(response: Response) -> dict[str, str]:
+    """Return detailed gateway health information.
+
+    Args:
+        response: FastAPI response used to attach the gateway identity header.
+
     Returns:
-        Status, timestamp and version
+        Status, timestamp, and application version.
     """
+    response.headers["X-Kiro-Gateway"] = "true"
     return {
         "status": "healthy",
         "timestamp": datetime.now(timezone.utc).isoformat(),

@@ -124,13 +124,49 @@ Add this to `~/.zshrc` to avoid typing the path each time:
 # Kiro Gateway
 kiro-gateway() {
   local gw_dir="$HOME/repo/kiro-gateway"   # adjust to your clone location
-  local port
-  port=$(grep -m1 '^SERVER_PORT=' "$gw_dir/.env" 2>/dev/null | cut -d'"' -f2)
-  (cd "$gw_dir" && python3 main.py --port "${port:-8000}")
+  (cd "$gw_dir" && python3 main.py)
 }
 ```
 
-Then `kiro-gateway` starts it in the foreground; stop it with Ctrl+C.
+Then `kiro-gateway` starts it in the foreground; stop it with Ctrl+C. Do not add
+`--port` or a `SERVER_PORT=...` assignment to the helper: `main.py` reads the
+persisted port from this checkout's `.env`, so the helper automatically follows
+future port changes.
+
+### Choosing or changing the gateway port
+
+`.env` is the persisted source of truth for the gateway port. The installer uses
+the same value for the server runtime and Claude Code's `ANTHROPIC_BASE_URL`.
+
+For a first setup on a custom port:
+
+```bash
+./setup.sh --port 9000
+```
+
+To change the port after setup is already complete:
+
+```bash
+./setup.sh --port 9100
+```
+
+The existing-installation path changes only `SERVER_PORT` and the managed Claude
+Code connection values. It reuses the current proxy token, preserves unrelated
+Claude settings, and backs up `.env` to `.env.bak`.
+
+Complete this checklist one step at a time:
+
+1. Run `./setup.sh --port <new-port>` and resolve any reported zsh helper drift.
+2. Stop the running gateway with Ctrl+C.
+3. Start it again with `python3 main.py` or the port-neutral `kiro-gateway` helper.
+4. Open a new Claude Code session so it reloads `~/.claude/settings.json`.
+5. Run `./setup.sh --check-port`; it must report the runtime, Claude Code, and
+   optional zsh helper as aligned.
+
+Do not use `python3 main.py --port N` for a persistent change: that is a transient
+runtime override and cannot update Claude Code. Also remove any exported
+`SERVER_PORT` from the launching shell (`unset SERVER_PORT`), because shell
+environment variables override `.env`.
 
 > **Why no `export` lines?** Environment variables do not cross terminal sessions, so exporting
 > them in the window running the gateway would not reach the window running `claude`. Putting them
@@ -141,7 +177,7 @@ If you prefer environment variables over the settings file, export these instead
 apply only to the shell you set them in:
 
 ```bash
-export ANTHROPIC_BASE_URL="http://localhost:8000"
+export ANTHROPIC_BASE_URL="http://localhost:$(python3 scripts/manage_gateway_port.py resolve)"
 export ANTHROPIC_AUTH_TOKEN="<your PROXY_API_KEY from .env>"
 ```
 
@@ -151,7 +187,8 @@ Model discovery is enabled by `setup.sh`, so `/model` inside Claude Code lists t
 subscription grants, labelled `From gateway`. To inspect them directly:
 
 ```bash
-curl -s localhost:8000/v1/models -H "Authorization: Bearer $PROXY_API_KEY" \
+PORT=$(python3 scripts/manage_gateway_port.py resolve)
+curl -s "localhost:$PORT/v1/models" -H "Authorization: Bearer $PROXY_API_KEY" \
   | python3 -c "import sys,json; print('\n'.join(m['id'] for m in json.load(sys.stdin)['data']))"
 ```
 
@@ -267,11 +304,11 @@ cp .env.example .env
 # Start the server
 python main.py
 
-# Or with custom port (if 8000 is busy)
+# Or with custom port (if 4567 is busy)
 python main.py --port 9000
 ```
 
-The server will be available at `http://localhost:8000`
+The server will be available at `http://localhost:4567`
 
 ---
 
@@ -527,7 +564,7 @@ docker-compose up -d
 
 # 3. Check status
 docker-compose logs -f
-curl http://localhost:8000/health
+curl http://localhost:4567/health
 ```
 
 ### Docker Run (Without Compose)
@@ -537,7 +574,7 @@ curl http://localhost:8000/health
 
 ```bash
 docker run -d \
-  -p 8000:8000 \
+  -p 4567:4567 \
   -e PROXY_API_KEY="my-super-secret-password-123" \
   -e REFRESH_TOKEN="your_refresh_token" \
   --name kiro-gateway \
@@ -552,7 +589,7 @@ docker run -d \
 **Linux/macOS:**
 ```bash
 docker run -d \
-  -p 8000:8000 \
+  -p 4567:4567 \
   -v ~/.aws/sso/cache:/home/kiro/.aws/sso/cache:ro \
   -e KIRO_CREDS_FILE=/home/kiro/.aws/sso/cache/kiro-auth-token.json \
   -e PROXY_API_KEY="my-super-secret-password-123" \
@@ -563,7 +600,7 @@ docker run -d \
 **Windows (PowerShell):**
 ```powershell
 docker run -d `
-  -p 8000:8000 `
+  -p 4567:4567 `
   -v ${HOME}/.aws/sso/cache:/home/kiro/.aws/sso/cache:ro `
   -e KIRO_CREDS_FILE=/home/kiro/.aws/sso/cache/kiro-auth-token.json `
   -e PROXY_API_KEY="my-super-secret-password-123" `
@@ -577,7 +614,7 @@ docker run -d `
 <summary>🔹 Using .env File</summary>
 
 ```bash
-docker run -d -p 8000:8000 --env-file .env --name kiro-gateway ghcr.io/jwadow/kiro-gateway:latest
+docker run -d -p 4567:4567 --env-file .env --name kiro-gateway ghcr.io/jwadow/kiro-gateway:latest
 ```
 
 </details>
@@ -614,7 +651,7 @@ docker-compose pull && docker-compose up -d  # Update
 
 ```bash
 docker build -t kiro-gateway .
-docker run -d -p 8000:8000 --env-file .env kiro-gateway
+docker run -d -p 4567:4567 --env-file .env kiro-gateway
 ```
 
 </details>
@@ -696,7 +733,7 @@ Leave `VPN_PROXY_URL` empty (default) if you don't need proxy support.
 <summary>🔹 Simple cURL Request</summary>
 
 ```bash
-curl http://localhost:8000/v1/chat/completions \
+curl http://localhost:4567/v1/chat/completions \
   -H "Authorization: Bearer my-super-secret-password-123" \
   -H "Content-Type: application/json" \
   -d '{
@@ -714,7 +751,7 @@ curl http://localhost:8000/v1/chat/completions \
 <summary>🔹 Streaming Request</summary>
 
 ```bash
-curl http://localhost:8000/v1/chat/completions \
+curl http://localhost:4567/v1/chat/completions \
   -H "Authorization: Bearer my-super-secret-password-123" \
   -H "Content-Type: application/json" \
   -d '{
@@ -733,7 +770,7 @@ curl http://localhost:8000/v1/chat/completions \
 <summary>🛠️ With Tool Calling</summary>
 
 ```bash
-curl http://localhost:8000/v1/chat/completions \
+curl http://localhost:4567/v1/chat/completions \
   -H "Authorization: Bearer my-super-secret-password-123" \
   -H "Content-Type: application/json" \
   -d '{
@@ -765,7 +802,7 @@ curl http://localhost:8000/v1/chat/completions \
 from openai import OpenAI
 
 client = OpenAI(
-    base_url="http://localhost:8000/v1",
+    base_url="http://localhost:4567/v1",
     api_key="my-super-secret-password-123"  # Your PROXY_API_KEY from .env
 )
 
@@ -792,7 +829,7 @@ for chunk in response:
 from langchain_openai import ChatOpenAI
 
 llm = ChatOpenAI(
-    base_url="http://localhost:8000/v1",
+    base_url="http://localhost:4567/v1",
     api_key="my-super-secret-password-123",  # Your PROXY_API_KEY from .env
     model="claude-sonnet-4-5"
 )
@@ -809,7 +846,7 @@ print(response.content)
 <summary>🔹 Simple cURL Request</summary>
 
 ```bash
-curl http://localhost:8000/v1/messages \
+curl http://localhost:4567/v1/messages \
   -H "x-api-key: my-super-secret-password-123" \
   -H "anthropic-version: 2023-06-01" \
   -H "Content-Type: application/json" \
@@ -828,7 +865,7 @@ curl http://localhost:8000/v1/messages \
 <summary>🔹 With System Prompt</summary>
 
 ```bash
-curl http://localhost:8000/v1/messages \
+curl http://localhost:4567/v1/messages \
   -H "x-api-key: my-super-secret-password-123" \
   -H "anthropic-version: 2023-06-01" \
   -H "Content-Type: application/json" \
@@ -848,7 +885,7 @@ curl http://localhost:8000/v1/messages \
 <summary>📡 Streaming</summary>
 
 ```bash
-curl http://localhost:8000/v1/messages \
+curl http://localhost:4567/v1/messages \
   -H "x-api-key: my-super-secret-password-123" \
   -H "anthropic-version: 2023-06-01" \
   -H "Content-Type: application/json" \
@@ -870,7 +907,7 @@ import anthropic
 
 client = anthropic.Anthropic(
     api_key="my-super-secret-password-123",  # Your PROXY_API_KEY from .env
-    base_url="http://localhost:8000"
+    base_url="http://localhost:4567"
 )
 
 # Non-streaming

@@ -9,6 +9,38 @@ from pathlib import Path
 from typing import Optional
 
 
+def find_raw_dotenv_values(text: str, variable: str) -> list[str]:
+    """Find literal values for one variable in dotenv text.
+
+    Args:
+        text: Complete dotenv content.
+        variable: Environment variable name to find.
+
+    Returns:
+        Values in declaration order, preserving literal backslashes and removing
+        matching quotes and unquoted inline comments.
+    """
+    assignment = re.compile(
+        rf"^(?:export\s+)?{re.escape(variable)}\s*=\s*(.*)$"
+    )
+    quoted = re.compile(r'^(?P<quote>["\'])(?P<value>.*?)\1(?:\s+#.*)?$')
+    values: list[str] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        match = assignment.match(line)
+        if match is None:
+            continue
+        raw_value = match.group(1).strip()
+        quoted_match = quoted.match(raw_value)
+        if quoted_match is not None:
+            values.append(quoted_match.group("value"))
+        else:
+            values.append(re.sub(r"\s+#.*$", "", raw_value).strip())
+    return values
+
+
 def read_raw_dotenv_value(path: Path, variable: str) -> Optional[str]:
     """Read one dotenv value without decoding backslash escape sequences.
 
@@ -27,12 +59,5 @@ def read_raw_dotenv_value(path: Path, variable: str) -> Optional[str]:
     if not path.exists():
         return None
 
-    pattern = re.compile(rf'^{re.escape(variable)}=(["\']?)(.*?)\1\s*$')
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        match = pattern.match(line)
-        if match:
-            return match.group(2)
-    return None
+    values = find_raw_dotenv_values(path.read_text(encoding="utf-8"), variable)
+    return values[0] if values else None

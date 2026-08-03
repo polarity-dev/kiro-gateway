@@ -10,6 +10,8 @@
 #
 # Safe to re-run: prompts before overwriting anything.
 # Pass -y/--yes for non-interactive mode (accepts all prompts; for AI agents).
+# Pass --port PORT to persist a custom gateway port, or --check-port to verify
+# that the gateway, Claude Code, and the optional zsh helper stay aligned.
 
 set -euo pipefail
 
@@ -18,7 +20,10 @@ ENV_FILE="$REPO_DIR/.env"
 CREDS_FILE="$HOME/.aws/sso/cache/kiro-auth-token.json"
 KIRO_LOGS="$HOME/Library/Application Support/Kiro/logs"
 CLAUDE_SETTINGS="$HOME/.claude/settings.json"
-PORT="8000"
+PORT=""
+REQUESTED_PORT=""
+PORT_REQUESTED=0
+CHECK_PORT=0
 
 info()  { printf '  %s\n' "$*"; }
 ok()    { printf '  \033[32m✓\033[0m %s\n' "$*"; }
@@ -43,13 +48,35 @@ ask() {
 # cannot auto-answer is a missing profileArn — that still requires the user to
 # send a message in Kiro IDE first, so the script fails with guidance instead.
 ASSUME_YES=0
-for arg in "$@"; do
-  case "$arg" in
-    -y|--yes) ASSUME_YES=1 ;;
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -y|--yes)
+      ASSUME_YES=1
+      shift
+      ;;
+    --port)
+      [ "$#" -ge 2 ] || fail "--port requires a value (try --help)"
+      REQUESTED_PORT="$2"
+      PORT_REQUESTED=1
+      shift 2
+      ;;
+    --port=*)
+      REQUESTED_PORT="${1#*=}"
+      PORT_REQUESTED=1
+      shift
+      ;;
+    --check-port)
+      CHECK_PORT=1
+      shift
+      ;;
     -h|--help)
-      printf 'Usage: %s [-y|--yes]\n\n  -y, --yes   Non-interactive: accept all prompts (for AI agents / CI)\n' "$0"
-      exit 0 ;;
-    *) fail "Unknown argument: $arg (try --help)" ;;
+      printf 'Usage: %s [-y|--yes] [--port PORT] [--check-port]\n\n' "$0"
+      printf '  -y, --yes       Non-interactive: accept setup prompts\n'
+      printf '  --port PORT     Persist a custom port (1-65535); safe on existing setups\n'
+      printf '  --check-port    Verify .env, Claude Code, and the optional zsh helper\n'
+      exit 0
+      ;;
+    *) fail "Unknown argument: $1 (try --help)" ;;
   esac
 done
 
@@ -64,6 +91,66 @@ if ! python3 -c 'import httpx, fastapi' 2>/dev/null; then
   python3 -m pip install -q -r "$REPO_DIR/requirements.txt" || fail "pip install failed."
 fi
 ok "Python dependencies present"
+
+PORT_ARGS=(--env-file "$ENV_FILE" --settings "$CLAUDE_SETTINGS" --zshrc "$HOME/.zshrc")
+
+if [ "$CHECK_PORT" -eq 1 ]; then
+  [ "$PORT_REQUESTED" -eq 0 ] || fail "Use --check-port without --port"
+  python3 "$REPO_DIR/scripts/manage_gateway_port.py" "${PORT_ARGS[@]}" check
+  exit $?
+fi
+
+if [ "$PORT_REQUESTED" -eq 1 ]; then
+  PORT=$(python3 "$REPO_DIR/scripts/manage_gateway_port.py" "${PORT_ARGS[@]}" resolve --port "$REQUESTED_PORT") \
+    || fail "Invalid --port value: $REQUESTED_PORT"
+else
+  PORT=$(python3 "$REPO_DIR/scripts/manage_gateway_port.py" "${PORT_ARGS[@]}" resolve) \
+    || fail "Fix SERVER_PORT in $ENV_FILE, then re-run setup"
+fi
+
+# On a complete existing installation, --port is a focused, non-destructive
+# update. A partial .env continues through the full discovery/setup flow, while
+# malformed existing configuration fails closed instead of being overwritten.
+PORT_READY=1
+if [ "$PORT_REQUESTED" -eq 1 ]; then
+  if python3 "$REPO_DIR/scripts/manage_gateway_port.py" "${PORT_ARGS[@]}" ready; then
+    PORT_READY=0
+  else
+    PORT_READY=$?
+    [ "$PORT_READY" -eq 1 ] || fail "Existing port configuration is malformed; fix the reported error before setup"
+  fi
+fi
+if [ "$PORT_REQUESTED" -eq 1 ] && [ "$PORT_READY" -eq 0 ]; then
+  step "Updating existing gateway port"
+  python3 "$REPO_DIR/scripts/manage_gateway_port.py" "${PORT_ARGS[@]}" set "$PORT" \
+    || fail "Port update failed; existing configuration was preserved"
+  ok "Gateway and Claude Code now use port $PORT"
+  cat <<EOF
+
+Restart checklist (complete one step at a time):
+  1. Stop the running gateway with Ctrl+C.
+  2. Start it again:  cd $REPO_DIR && python3 main.py
+  3. Open a new Claude Code session so it reloads ~/.claude/settings.json.
+  4. Verify alignment:  cd $REPO_DIR && ./setup.sh --check-port
+
+The recommended ~/.zshrc helper runs python3 main.py without --port, so it
+always follows SERVER_PORT from $ENV_FILE.
+EOF
+  if ! python3 "$REPO_DIR/scripts/manage_gateway_port.py" "${PORT_ARGS[@]}" check; then
+    fail "Port files were updated, but the optional zsh helper still needs the fix shown above"
+  fi
+  exit 0
+fi
+
+if [ ! -f "$ENV_FILE" ] && [ "$PORT_REQUESTED" -eq 0 ] && [ "$ASSUME_YES" -eq 0 ]; then
+  printf '  Gateway port [%s]: ' "$PORT"
+  read -r reply
+  if [ -n "$reply" ]; then
+    PORT=$(python3 "$REPO_DIR/scripts/manage_gateway_port.py" "${PORT_ARGS[@]}" resolve --port "$reply") \
+      || fail "Invalid port: $reply"
+  fi
+fi
+ok "Gateway port: $PORT"
 
 # ---------------------------------------------------------------------------
 step "2/7  Locating Kiro credentials"
@@ -154,6 +241,9 @@ KIRO_API_REGION="$API_REGION"
 # CodeWhisperer profile ARN. Not returned by the SSO OIDC refresh flow, so it
 # must be set explicitly. Read from Kiro IDE logs by setup.sh.
 PROFILE_ARN="$PROFILE_ARN"
+
+# Port shared by the gateway runtime and Claude Code.
+SERVER_PORT="$PORT"
 
 # Debug logging: off | errors | all
 DEBUG_MODE=off
@@ -250,5 +340,13 @@ $(printf '\033[1mSetup complete.\033[0m')
 
   Available models:     curl -s localhost:$PORT/v1/models \\
                           -H "Authorization: Bearer \$PROXY_API_KEY"
+  Check port alignment: cd $REPO_DIR && ./setup.sh --check-port
+  Change port safely:   cd $REPO_DIR && ./setup.sh --port 9000
   Switch model:         /model inside Claude Code
 EOF
+
+if python3 "$REPO_DIR/scripts/manage_gateway_port.py" "${PORT_ARGS[@]}" check; then
+  ok "Gateway, Claude Code, and shell helper ports are aligned"
+else
+  warn "Setup finished, but port alignment needs attention; follow the check output above."
+fi

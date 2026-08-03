@@ -80,8 +80,9 @@ From the repo root:
 ./setup.sh -y
 ```
 
-The `-y` flag runs it non-interactively so you (the agent) don't hang on
-prompts. This single script:
+Use `./setup.sh -y --port 9000` when the user requests a custom port during the
+first setup. The `-y` flag runs non-interactively so you (the agent) don't hang
+on prompts. This single script:
 
 - Installs Python dependencies from `requirements.txt` if missing.
 - Locates the Kiro credentials file.
@@ -89,9 +90,10 @@ prompts. This single script:
   flow never returns it, so this is the only way to get it).
 - Resolves the correct `KIRO_API_REGION` from the ARN (the API region usually
   differs from the SSO login region).
-- Generates a random `PROXY_API_KEY` and writes `.env`.
-- Configures `~/.claude/settings.json` atomically: points Claude Code at
-  `http://localhost:8000` with `ANTHROPIC_AUTH_TOKEN`, enables gateway model
+- Generates a random `PROXY_API_KEY` and writes `.env`, including the selected
+  `SERVER_PORT` (default `4567`).
+- Configures `~/.claude/settings.json` atomically: points Claude Code at the same
+  `http://localhost:<SERVER_PORT>` with `ANTHROPIC_AUTH_TOKEN`, enables gateway model
   discovery, and synchronizes Kiro's live display IDs into a non-empty
   `availableModels` string list with `enforceAvailableModels: true`. This hides
   Claude Code's built-in model rows across model-selection surfaces. The
@@ -111,6 +113,44 @@ by hand as a shortcut — the script's discovery logic exists precisely because
 those values cannot be guessed. If the script fails, fix the precondition it
 reports and re-run it.
 
+### Changing the port safely
+
+Treat `.env` as the persistent source of truth. Never change only
+`ANTHROPIC_BASE_URL`, only the zsh helper, or only a one-off `--port` argument.
+The supported command updates `.env` and Claude Code together while preserving
+the existing proxy token, model policy, and unrelated Claude settings:
+
+```bash
+./setup.sh --port 9000
+```
+
+On a fresh checkout, add `--port` to the normal first setup instead:
+
+```bash
+./setup.sh -y --port 9000
+```
+
+For an already configured installation, complete these steps one at a time:
+
+1. Run `./setup.sh --port <new-port>`. It validates the port, backs up `.env` to
+   `.env.bak`, updates `SERVER_PORT`, and updates Claude Code's
+   `ANTHROPIC_BASE_URL` using the existing proxy token.
+2. If the command reports a `~/.zshrc` helper mismatch, replace the helper with
+   the port-neutral form printed by setup. It must run `python3 main.py` without
+   `--port` or an inline `SERVER_PORT=...` assignment.
+3. Stop the currently running gateway with Ctrl+C. Changing files cannot move an
+   already running listener.
+4. Restart it with `python3 main.py` or the port-neutral `kiro-gateway` helper.
+5. Open a new Claude Code session so it reloads `~/.claude/settings.json`.
+6. Run `./setup.sh --check-port`. It must report the persisted gateway runtime,
+   Claude Code, and the optional zsh helper as aligned.
+
+`./setup.sh --check-port` is read-only. It also reports an exported
+`SERVER_PORT` in the current shell when that value would override `.env`.
+Remove such an override with `unset SERVER_PORT` before launching the gateway.
+A direct `python3 main.py --port N` remains available for temporary diagnostics,
+but it is not a persistent port change and cannot synchronize Claude Code.
+
 ### Step 3 — Start the gateway
 
 The gateway is a foreground server. Start it in its own terminal:
@@ -119,9 +159,10 @@ The gateway is a foreground server. Start it in its own terminal:
 python3 main.py
 ```
 
-It listens on `http://localhost:8000`. Leave it running — Claude Code talks to
-it. If port 8000 is busy, use `python3 main.py --port 9000` and update
-`ANTHROPIC_BASE_URL` in `~/.claude/settings.json` to match.
+It listens on the `SERVER_PORT` persisted in `.env` (`4567` by default). Leave
+it running — Claude Code talks to it. If the port must change, do not use a
+one-off `python3 main.py --port ...` override; follow **Changing the port safely**
+above so Claude Code stays synchronized.
 
 Because the config lives in `~/.claude/settings.json` (not shell exports), the
 user does **not** need to export anything or start the gateway from any
@@ -134,7 +175,8 @@ With the gateway running, confirm the two hops work:
 
 ```bash
 # 1. Gateway is up and authenticated — lists the models your subscription grants
-curl -s localhost:8000/v1/models -H "Authorization: Bearer $(grep -m1 '^PROXY_API_KEY=' .env | cut -d'"' -f2)" \
+PORT=$(python3 scripts/manage_gateway_port.py resolve)
+curl -s "localhost:$PORT/v1/models" -H "Authorization: Bearer $(grep -m1 '^PROXY_API_KEY=' .env | cut -d'"' -f2)" \
   | python3 -c "import sys,json; print('\n'.join(m['id'] for m in json.load(sys.stdin)['data']))"
 ```
 
@@ -313,8 +355,9 @@ Tell the user, in plain language:
 | `Could not find profileArn in Kiro IDE logs` | No message sent in Kiro IDE yet | Send one message in Kiro IDE, re-run `./setup.sh -y` |
 | Claude Code opens a browser login page | `ANTHROPIC_API_KEY` set instead of `ANTHROPIC_AUTH_TOKEN` | Re-run `./setup.sh -y`; it sets the correct one |
 | `runtime.<region>.kiro.dev does not resolve` | Network blocking the endpoint | Set `VPN_PROXY_URL` in `.env` (see README → VPN/Proxy Support) |
-| `403 User is not authorized` | Calling Kiro API directly, not through gateway | Point the client at `localhost:8000`, not at Kiro |
-| Port 8000 already in use | Another process on 8000 | `python3 main.py --port 9000` and update `ANTHROPIC_BASE_URL` |
+| `403 User is not authorized` | Calling Kiro API directly, not through gateway | Point the client at the `SERVER_PORT` shown by `./setup.sh --check-port`, not at Kiro |
+| Configured port already in use | Another process owns the port | Run `./setup.sh --port <free-port>`, then follow the restart checklist above |
+| Port alignment check fails | Claude settings, shell environment, or helper overrides `.env` | Follow each mismatch printed by `./setup.sh --check-port`, then restart gateway and Claude Code |
 
 ## Non-negotiables
 

@@ -149,7 +149,7 @@ def test_merge_gateway_connection_removes_legacy_model_and_preserves_env() -> No
 def test_merge_gateway_connection_rejects_invalid_env_container() -> None:
     """Setup does not overwrite a malformed env setting."""
     with pytest.raises(ClaudeSettingsError, match="env"):
-        merge_gateway_connection({"env": []}, "http://localhost:8000", "secret")
+        merge_gateway_connection({"env": []}, "http://localhost:4567", "secret")
 
 
 def test_merge_permission_is_idempotent_and_validates_shape() -> None:
@@ -200,7 +200,7 @@ def test_atomic_write_rejects_dangling_symlink(tmp_path: Path) -> None:
     link = tmp_path / "settings.json"
     link.symlink_to("missing.json")
 
-    with pytest.raises(ClaudeSettingsError, match="Cannot read Claude settings"):
+    with pytest.raises(ClaudeSettingsError, match="Cannot atomically write Claude settings"):
         write_claude_settings_atomic(link, {"model": "new"})
 
     assert link.is_symlink()
@@ -213,7 +213,7 @@ def test_atomic_replace_failure_preserves_original(tmp_path: Path) -> None:
     original = {"model": "old"}
     path.write_text(json.dumps(original), encoding="utf-8")
 
-    with patch("kiro.claude_settings.os.replace", side_effect=OSError("blocked")):
+    with patch("kiro.atomic_io.os.replace", side_effect=OSError("blocked")):
         with pytest.raises(ClaudeSettingsError, match="atomically write"):
             write_claude_settings_atomic(path, {"model": "new"})
 

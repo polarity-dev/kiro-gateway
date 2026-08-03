@@ -79,11 +79,11 @@ cp .env.example .env
 # Запустите сервер
 python main.py
 
-# Или с другим портом (если 8000 занят)
+# Или с другим портом (если 4567 занят)
 python main.py --port 9000
 ```
 
-Сервер будет доступен по адресу `http://localhost:8000`
+Сервер будет доступен по адресу `http://localhost:4567`
 
 ---
 
@@ -339,7 +339,7 @@ docker-compose up -d
 
 # 3. Проверьте статус
 docker-compose logs -f
-curl http://localhost:8000/health
+curl http://localhost:4567/health
 ```
 
 ### Docker Run (без Compose)
@@ -349,7 +349,7 @@ curl http://localhost:8000/health
 
 ```bash
 docker run -d \
-  -p 8000:8000 \
+  -p 4567:4567 \
   -e PROXY_API_KEY="my-super-secret-password-123" \
   -e REFRESH_TOKEN="your_refresh_token" \
   --name kiro-gateway \
@@ -364,7 +364,7 @@ docker run -d \
 **Linux/macOS:**
 ```bash
 docker run -d \
-  -p 8000:8000 \
+  -p 4567:4567 \
   -v ~/.aws/sso/cache:/home/kiro/.aws/sso/cache:ro \
   -e KIRO_CREDS_FILE=/home/kiro/.aws/sso/cache/kiro-auth-token.json \
   -e PROXY_API_KEY="my-super-secret-password-123" \
@@ -375,7 +375,7 @@ docker run -d \
 **Windows (PowerShell):**
 ```powershell
 docker run -d `
-  -p 8000:8000 `
+  -p 4567:4567 `
   -v ${HOME}/.aws/sso/cache:/home/kiro/.aws/sso/cache:ro `
   -e KIRO_CREDS_FILE=/home/kiro/.aws/sso/cache/kiro-auth-token.json `
   -e PROXY_API_KEY="my-super-secret-password-123" `
@@ -389,7 +389,7 @@ docker run -d `
 <summary>🔹 Использование файла .env</summary>
 
 ```bash
-docker run -d -p 8000:8000 --env-file .env --name kiro-gateway ghcr.io/jwadow/kiro-gateway:latest
+docker run -d -p 4567:4567 --env-file .env --name kiro-gateway ghcr.io/jwadow/kiro-gateway:latest
 ```
 
 </details>
@@ -426,7 +426,7 @@ docker-compose pull && docker-compose up -d  # Обновление
 
 ```bash
 docker build -t kiro-gateway .
-docker run -d -p 8000:8000 --env-file .env kiro-gateway
+docker run -d -p 4567:4567 --env-file .env kiro-gateway
 ```
 
 </details>
@@ -508,7 +508,7 @@ VPN_PROXY_URL=192.168.1.100:8080
 <summary>🔹 Простой cURL-запрос</summary>
 
 ```bash
-curl http://localhost:8000/v1/chat/completions \
+curl http://localhost:4567/v1/chat/completions \
   -H "Authorization: Bearer my-super-secret-password-123" \
   -H "Content-Type: application/json" \
   -d '{
@@ -526,7 +526,7 @@ curl http://localhost:8000/v1/chat/completions \
 <summary>🔹 Запрос со стримингом</summary>
 
 ```bash
-curl http://localhost:8000/v1/chat/completions \
+curl http://localhost:4567/v1/chat/completions \
   -H "Authorization: Bearer my-super-secret-password-123" \
   -H "Content-Type: application/json" \
   -d '{
@@ -545,7 +545,7 @@ curl http://localhost:8000/v1/chat/completions \
 <summary>🛠️ С вызовом инструментов</summary>
 
 ```bash
-curl http://localhost:8000/v1/chat/completions \
+curl http://localhost:4567/v1/chat/completions \
   -H "Authorization: Bearer my-super-secret-password-123" \
   -H "Content-Type: application/json" \
   -d '{
@@ -577,7 +577,7 @@ curl http://localhost:8000/v1/chat/completions \
 from openai import OpenAI
 
 client = OpenAI(
-    base_url="http://localhost:8000/v1",
+    base_url="http://localhost:4567/v1",
     api_key="my-super-secret-password-123"  # Ваш PROXY_API_KEY из .env
 )
 
@@ -604,7 +604,7 @@ for chunk in response:
 from langchain_openai import ChatOpenAI
 
 llm = ChatOpenAI(
-    base_url="http://localhost:8000/v1",
+    base_url="http://localhost:4567/v1",
     api_key="my-super-secret-password-123",  # Ваш PROXY_API_KEY из .env
     model="claude-sonnet-4-5"
 )
@@ -621,7 +621,7 @@ print(response.content)
 <summary>🔹 Простой cURL-запрос</summary>
 
 ```bash
-curl http://localhost:8000/v1/messages \
+curl http://localhost:4567/v1/messages \
   -H "x-api-key: my-super-secret-password-123" \
   -H "anthropic-version: 2023-06-01" \
   -H "Content-Type: application/json" \
@@ -640,7 +640,7 @@ curl http://localhost:8000/v1/messages \
 <summary>🔹 С системным промптом</summary>
 
 ```bash
-curl http://localhost:8000/v1/messages \
+curl http://localhost:4567/v1/messages \
   -H "x-api-key: my-super-secret-password-123" \
   -H "anthropic-version: 2023-06-01" \
   -H "Content-Type: application/json" \
@@ -660,7 +660,7 @@ curl http://localhost:8000/v1/messages \
 <summary>📡 Стриминг</summary>
 
 ```bash
-curl http://localhost:8000/v1/messages \
+curl http://localhost:4567/v1/messages \
   -H "x-api-key: my-super-secret-password-123" \
   -H "anthropic-version: 2023-06-01" \
   -H "Content-Type: application/json" \
@@ -682,7 +682,7 @@ import anthropic
 
 client = anthropic.Anthropic(
     api_key="my-super-secret-password-123",  # Ваш PROXY_API_KEY из .env
-    base_url="http://localhost:8000"
+    base_url="http://localhost:4567"
 )
 
 # Без стриминга
