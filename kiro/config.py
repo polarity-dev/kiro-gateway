@@ -265,6 +265,9 @@ MODEL_ALIASES: Dict[str, str] = {
     "claude-qwen3-coder-next · 0.05x · 256k": "qwen3-coder-next",
     "claude-minimax-m2.1 · 0.15x · 196k":     "minimax-m2.1",
     "claude-minimax-m2.5 · 0.25x · 196k":     "minimax-m2.5",
+    "claude-gpt-5.6-luna · 0.1x":             "gpt-5.6-luna",
+    "claude-gpt-5.6-terra · 1x":              "gpt-5.6-terra",
+    "claude-gpt-5.6-sol · 2.4x":             "gpt-5.6-sol",
     "claude-haiku-4.5 · 0.4x · 200k":         "claude-haiku-4.5",
     "claude-sonnet-4 · 1.3x · 200k":          "claude-sonnet-4",
     "claude-sonnet-4.5 · 1.3x · 200k":        "claude-sonnet-4.5",
@@ -286,6 +289,9 @@ HIDDEN_FROM_LIST: List[str] = [
     "qwen3-coder-next",
     "minimax-m2.1",
     "minimax-m2.5",
+    "gpt-5.6-luna",
+    "gpt-5.6-terra",
+    "gpt-5.6-sol",
     "claude-haiku-4.5",
     "claude-sonnet-4",
     "claude-sonnet-4.5",
@@ -309,7 +315,7 @@ HIDDEN_FROM_LIST: List[str] = [
 # - Some models may not be available on your Kiro plan (e.g., Opus on free tier)
 # - New models released after this version won't appear here
 # - Update gateway regularly to get the latest model list
-# Last verified against runtime.eu-central-1.kiro.dev on 2026-07-30 via
+# Last verified against runtime.eu-central-1.kiro.dev on 2026-08-03 via
 # scripts/probe_models.py. Re-run that script to refresh the list.
 FALLBACK_MODELS: List[Dict[str, str]] = [
     {"modelId": "auto"},
@@ -323,6 +329,9 @@ FALLBACK_MODELS: List[Dict[str, str]] = [
     {"modelId": "claude-opus-4.7"},
     {"modelId": "claude-opus-4.8"},
     {"modelId": "claude-opus-5"},
+    {"modelId": "gpt-5.6-luna"},
+    {"modelId": "gpt-5.6-terra"},
+    {"modelId": "gpt-5.6-sol"},
     {"modelId": "minimax-m2.1"},
     {"modelId": "minimax-m2.5"},
     {"modelId": "qwen3-coder-next"},

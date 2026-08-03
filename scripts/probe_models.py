@@ -8,19 +8,23 @@
 """
 Probe which model IDs are actually accepted by Kiro's runtime endpoint.
 
-Runtime endpoints (runtime.{region}.kiro.dev) do NOT expose /ListAvailableModels
-(AWS limitation). This script works around that by sending a minimal
-generateAssistantResponse request for each candidate model and classifying
-the outcome:
+The script first calls ListAvailableModels on the legacy Q endpoint
+(q.{region}.amazonaws.com) to dynamically discover all available model IDs.
+It then probes each discovered model against the runtime endpoint
+(runtime.{region}.kiro.dev) to confirm it actually works, classifying the
+outcome:
 
     WORKS         status 200, first byte received
     UNKNOWN       status 400/403 with a body suggesting the model does not exist
     RATE_LIMITED  status 429 (model exists, quota exhausted)
     ERROR         other status, transport error, or timeout
 
+If ListAvailableModels is unreachable, it falls back to a static candidate list.
+
 Usage (from the repo root):
-    python scripts/probe_models.py                    # probe default candidate list
-    python scripts/probe_models.py --model foo-bar    # probe one model
+    python scripts/probe_models.py                    # discover + probe
+    python scripts/probe_models.py --no-discover      # skip discovery, use static list
+    python scripts/probe_models.py --model foo-bar    # probe extra model (merged with discovery)
     python scripts/probe_models.py --json > out.json  # machine-readable output
     python scripts/probe_models.py --diff             # print a proposed
                                                       # FALLBACK_MODELS diff
@@ -61,11 +65,11 @@ from kiro.config import (  # noqa: E402
 from kiro.utils import get_kiro_headers  # noqa: E402
 
 
-# Candidate model IDs to probe. Superset of the user-reported list and the
-# current FALLBACK_MODELS so we can detect additions AND regressions in one run.
-DEFAULT_CANDIDATES: List[str] = sorted({
+# Static fallback candidates — used only when ListAvailableModels discovery
+# fails (network error, auth issue, etc.). Keep this roughly in sync with
+# FALLBACK_MODELS but it doesn't need to be exact — it's a safety net.
+_STATIC_CANDIDATES: List[str] = sorted({
     "auto",
-    # Claude family (user-reported + current fallback)
     "claude-opus-5",
     "claude-sonnet-5",
     "claude-opus-4.8",
@@ -76,14 +80,75 @@ DEFAULT_CANDIDATES: List[str] = sorted({
     "claude-sonnet-4.5",
     "claude-sonnet-4",
     "claude-haiku-4.5",
-    # Non-Claude (user-reported)
     "minimax-m2.5",
     "minimax-m2.1",
     "qwen3-coder-next",
-    # Currently in FALLBACK but user says to remove — probe to confirm
-    "deepseek-3.2",
-    "glm-5",
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
 })
+
+
+# Legacy Q endpoint — the only one that exposes ListAvailableModels.
+# runtime.{region}.kiro.dev does NOT have it (returns UnknownOperationException).
+_Q_HOST_TEMPLATE = "https://q.{region}.amazonaws.com"
+
+
+async def _discover_candidates(auth: KiroAuthManager) -> Optional[List[str]]:
+    """
+    Call ListAvailableModels on the legacy Q endpoint to dynamically discover
+    all model IDs the account has access to. Returns None on failure.
+    """
+    # Extract region from api_host (https://runtime.{region}.kiro.dev)
+    # to build the legacy Q endpoint URL.
+    import re as _re
+    match = _re.search(r"runtime\.([^.]+)\.", auth.api_host)
+    if not match:
+        print(
+            f"⚠️  Cannot extract region from api_host ({auth.api_host}) — "
+            f"falling back to static candidates.",
+            file=sys.stderr,
+        )
+        return None
+    region = match.group(1)
+    q_host = _Q_HOST_TEMPLATE.format(region=region)
+    url = f"{q_host}/ListAvailableModels"
+    token = await auth.get_access_token()
+    headers = get_kiro_headers(auth, token)
+    # The legacy endpoint requires x-amz-target header
+    headers["x-amz-target"] = "AmazonCodeWhispererService.ListAvailableModels"
+
+    params = {"origin": "AI_EDITOR"}
+    if auth.profile_arn:
+        params["profileArn"] = auth.profile_arn
+
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(url, headers=headers, params=params, timeout=15.0)
+            if resp.status_code != 200:
+                print(
+                    f"⚠️  ListAvailableModels returned HTTP {resp.status_code} — "
+                    f"falling back to static candidates.",
+                    file=sys.stderr,
+                )
+                return None
+            data = resp.json()
+            models = data.get("models", [])
+            ids = [m["modelId"] for m in models if "modelId" in m]
+            if ids:
+                # Always include "auto" — it's a router alias that won't show
+                # up in ListAvailableModels but always works.
+                if "auto" not in ids:
+                    ids.append("auto")
+                return sorted(set(ids))
+            return None
+    except Exception as exc:
+        print(
+            f"⚠️  ListAvailableModels failed ({exc.__class__.__name__}: {exc}) — "
+            f"falling back to static candidates.",
+            file=sys.stderr,
+        )
+        return None
 
 
 # Classification of a single probe attempt.
@@ -327,10 +392,23 @@ def _print_diff(results: List[ProbeResult]) -> None:
             print(f"    ? {m}")
 
 
-async def _run(candidates: List[str], concurrency: int, timeout: float) -> List[ProbeResult]:
+async def _run(candidates: List[str], concurrency: int, timeout: float, discover: bool) -> tuple[List[ProbeResult], List[str]]:
+    """
+    Run probes. Returns (results, candidates_used).
+    If discover=True, attempts ListAvailableModels first to build candidate list.
+    """
     auth = _build_auth_manager()
     # Warm up the token once so parallel probes don't race on refresh.
     await auth.get_access_token()
+
+    # Dynamic discovery: merge ListAvailableModels output with any explicit candidates
+    discovered: List[str] = []
+    if discover:
+        discovered_ids = await _discover_candidates(auth)
+        if discovered_ids:
+            discovered = discovered_ids
+            # Merge: explicit candidates + discovered, deduped
+            candidates = sorted(set(candidates) | set(discovered))
 
     limits = httpx.Limits(max_connections=concurrency, max_keepalive_connections=concurrency)
     async with httpx.AsyncClient(limits=limits, http2=False) as client:
@@ -340,7 +418,8 @@ async def _run(candidates: List[str], concurrency: int, timeout: float) -> List[
             async with sem:
                 return await _probe_one(client, auth, model_id, timeout)
 
-        return await asyncio.gather(*(_guarded(m) for m in candidates))
+        results = await asyncio.gather(*(_guarded(m) for m in candidates))
+    return results, discovered
 
 
 def main() -> int:
@@ -349,7 +428,12 @@ def main() -> int:
         "--model",
         action="append",
         dest="models",
-        help="Probe a specific model ID (repeatable). Defaults to a built-in candidate list.",
+        help="Probe a specific model ID (repeatable). Combined with discovery results.",
+    )
+    parser.add_argument(
+        "--no-discover",
+        action="store_true",
+        help="Skip ListAvailableModels discovery, use only --model or static fallback list.",
     )
     parser.add_argument(
         "--concurrency",
@@ -375,8 +459,16 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    candidates = args.models or DEFAULT_CANDIDATES
-    results = asyncio.run(_run(candidates, args.concurrency, args.timeout))
+    # Build candidate list:
+    # - With --model: use those as the base (discovery will merge if enabled)
+    # - Without --model and --no-discover: use static fallback as base
+    # - Without --model and with discover: discovery replaces static list
+    base_candidates = args.models or _STATIC_CANDIDATES
+    discover = not args.no_discover
+
+    results, discovered = asyncio.run(
+        _run(base_candidates, args.concurrency, args.timeout, discover)
+    )
 
     # Rebuild an auth manager just to read the resolved api_host for the
     # header of the report. Cheap — it doesn't refresh a token.
@@ -384,12 +476,18 @@ def main() -> int:
 
     if args.json:
         json.dump(
-            {"api_host": api_host, "results": [r.to_dict() for r in results]},
+            {
+                "api_host": api_host,
+                "discovered_from_q_endpoint": discovered,
+                "results": [r.to_dict() for r in results],
+            },
             sys.stdout,
             indent=2,
         )
         sys.stdout.write("\n")
     else:
+        if discovered:
+            print(f"\n✓ Discovered {len(discovered)} models from ListAvailableModels (q.amazonaws.com)")
         _print_report(results, api_host)
         if args.diff:
             _print_diff(results)
