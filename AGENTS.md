@@ -337,11 +337,14 @@ The codebase follows a layered architecture:
 
 #### Model Resolution (`model_resolver.py`)
 
-4-layer resolution pipeline:
-1. **Normalize Name**: Convert client formats to Kiro format (dashes→dots, strip dates)
-2. **Check Dynamic Cache**: Models from /ListAvailableModels API
-3. **Check Hidden Models**: Manual config for undocumented models
-4. **Pass-through**: Unknown models sent to Kiro (let Kiro decide)
+Dynamic resolution pipeline:
+1. **Decode Display ID**: Recover raw Kiro IDs from generated picker rows
+2. **Normalize Name**: Convert compatible Claude formats to Kiro format
+3. **Check Dynamic Cache**: Use metadata from `ListAvailableModels`
+4. **Pass-through**: Send unknown models to Kiro as final arbiter
+
+`build_model_display_id()` is the single formatter used by `/v1/models` and the
+Claude Code settings synchronizer. Do not add static model registries.
 
 Key principle: **We are a gateway, not a gatekeeper**. Kiro API is the final arbiter.
 
@@ -655,16 +658,17 @@ VPN_PROXY_URL="http://user:pass@proxy:8080" # With auth
 4. Add streaming logic in `streaming_*.py`
 5. Write tests in `tests/unit/test_routes_*.py`
 
-### Adding a New Model
+### Refreshing Models
 
-Models are dynamically fetched from Kiro API. To add a hidden model:
+Models are dynamically fetched from Kiro's `ListAvailableModels` endpoint. Do
+not add IDs to `config.py`. To refresh Claude Code's local filtered picker, run:
 
-```python
-# In config.py
-HIDDEN_MODELS = [
-    "claude-new-model-1.0",
-]
+```bash
+python3 scripts/sync_claude_models.py sync
 ```
+
+Use `scripts/probe_models.py --model <id>` only to diagnose runtime acceptance;
+it does not define the catalog.
 
 ### Debugging Issues
 

@@ -49,6 +49,7 @@ from kiro.auth import KiroAuthManager
 from kiro.cache import ModelInfoCache
 from kiro.model_resolver import (
     ModelResolver,
+    build_model_display_id,
     normalize_model_name,
     set_known_model_ids,
 )
@@ -61,7 +62,11 @@ from kiro.config import (
 )
 from kiro.account_errors import ErrorType
 from kiro.http_client import KiroHttpClient
-from kiro.model_discovery import ModelDiscoveryError, fetch_available_models
+from kiro.model_discovery import (
+    ModelDiscoveryError,
+    fetch_available_models,
+    validate_model_catalog,
+)
 
 
 def _format_duration(seconds: float) -> str:
@@ -329,14 +334,9 @@ class AccountManager:
                     account.failures = data.get("failures", 0)
                     account.last_failure_time = data.get("last_failure_time", 0.0)
                     account.models_cached_at = data.get("models_cached_at", 0.0)
-                    catalog = data.get("model_catalog", [])
-                    if isinstance(catalog, list):
-                        account.model_catalog = [
-                            model for model in catalog
-                            if isinstance(model, dict)
-                            and isinstance(model.get("modelId"), str)
-                            and model["modelId"]
-                        ]
+                    account.model_catalog = validate_model_catalog(
+                        data.get("model_catalog", [])
+                    )
 
                     stats_data = data.get("stats", {})
                     account.stats = AccountStats(
@@ -628,14 +628,15 @@ class AccountManager:
                     if not success:
                         return None
                 
-                # Check TTL and refresh if needed
-                if account.models_cached_at > 0:
-                    age = time.time() - account.models_cached_at
-                    if age > ACCOUNT_CACHE_TTL:
-                        try:
-                            await self._refresh_account_models(account_id)
-                        except Exception as e:
-                            logger.warning(f"Failed to refresh models for {account_id}: {e}")
+                # Refresh stale catalogs and retry accounts whose first discovery failed.
+                if (
+                    account.models_cached_at <= 0
+                    or time.time() - account.models_cached_at > ACCOUNT_CACHE_TTL
+                ):
+                    try:
+                        await self._refresh_account_models(account_id)
+                    except Exception as e:
+                        logger.warning(f"Failed to refresh models for {account_id}: {e}")
                 # # Validate model availability
                 # if account.model_resolver:
                 #     normalized_model = normalize_model_name(model)
@@ -692,14 +693,15 @@ class AccountManager:
                         self._dirty = True
                         continue
                 
-                # Check TTL and refresh if needed
-                if account.models_cached_at > 0:
-                    age = time.time() - account.models_cached_at
-                    if age > ACCOUNT_CACHE_TTL:
-                        try:
-                            await self._refresh_account_models(account_id)
-                        except Exception as e:
-                            logger.warning(f"Failed to refresh models for {account_id}: {e}")
+                # Refresh stale catalogs and retry accounts whose first discovery failed.
+                if (
+                    account.models_cached_at <= 0
+                    or time.time() - account.models_cached_at > ACCOUNT_CACHE_TTL
+                ):
+                    try:
+                        await self._refresh_account_models(account_id)
+                    except Exception as e:
+                        logger.warning(f"Failed to refresh models for {account_id}: {e}")
                 # # Check if model is available on this account
                 # available_models = account.model_resolver.get_available_models()
                 # if normalized_model not in available_models:
@@ -830,18 +832,36 @@ class AccountManager:
                 return account
         raise RuntimeError("No initialized accounts available")
     
-    def get_all_available_models(self) -> List[str]:
-        """
-        Collect unique models from all initialized accounts.
-        
-        Used by /v1/models endpoint in account system to show
-        all available models across all accounts.
-        
+    async def initialize_all_model_catalogs(self) -> bool:
+        """Initialize every configured account and require a non-empty catalog.
+
         Returns:
-            Sorted list of unique model IDs
+            ``True`` when every configured account has live or last-known-good
+            model metadata, otherwise ``False``.
         """
-        all_models = set()
+        if not self._accounts:
+            return False
+
+        complete = True
+        for account_id in self._accounts:
+            account = self._accounts[account_id]
+            if account.auth_manager is None:
+                initialized = await self._initialize_account(account_id)
+                if not initialized and not account.model_catalog:
+                    complete = False
+                    continue
+            if not account.model_catalog:
+                complete = False
+        return complete
+
+    def get_all_available_models(self) -> List[str]:
+        """Collect unique models from every persisted or initialized catalog.
+
+        Returns:
+            Sorted list of unique Claude-compatible display IDs.
+        """
+        models_by_id: Dict[str, Dict] = {}
         for account in self._accounts.values():
-            if account.model_resolver:
-                all_models.update(account.model_resolver.get_available_models())
-        return sorted(all_models)
+            for model in validate_model_catalog(account.model_catalog):
+                models_by_id.setdefault(model["modelId"], model)
+        return sorted(build_model_display_id(model) for model in models_by_id.values())

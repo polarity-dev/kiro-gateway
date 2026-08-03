@@ -41,3 +41,13 @@ def test_default_probe_uses_live_discovery(probe_models_module: ModuleType) -> N
 
     assert candidates == []
     assert discover is True
+
+
+def test_failed_discovery_is_not_reported_as_clean(probe_models_module: ModuleType) -> None:
+    """A zero-model default audit exits non-zero."""
+    assert probe_models_module._result_exit_code([], True, []) == 2
+
+
+def test_explicit_empty_result_can_complete_cleanly(probe_models_module: ModuleType) -> None:
+    """Only discovery-dependent zero-model runs represent a failed audit."""
+    assert probe_models_module._result_exit_code([], False, []) == 0

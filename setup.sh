@@ -25,6 +25,17 @@ ok()    { printf '  \033[32m✓\033[0m %s\n' "$*"; }
 warn()  { printf '  \033[33m!\033[0m %s\n' "$*"; }
 fail()  { printf '  \033[31m✗\033[0m %s\n' "$*" >&2; exit 1; }
 step()  { printf '\n\033[1m%s\033[0m\n' "$*"; }
+ask() {
+  if [ "$ASSUME_YES" -eq 1 ]; then
+    return 0
+  fi
+  printf '  %s [Y/n] ' "$1"
+  read -r reply
+  case "$reply" in
+    [nN]) return 1 ;;
+    *)    return 0 ;;
+  esac
+}
 
 # Non-interactive mode. When set (via -y/--yes), all prompts assume their
 # default answer: overwrite .env (after backing it up) and configure Claude
@@ -161,63 +172,22 @@ else
 fi
 case "$reply" in
   [nN])
-    info "Skipped. To do it later, set these in $CLAUDE_SETTINGS:"
-    info "  ANTHROPIC_BASE_URL=http://localhost:$PORT"
-    info "  ANTHROPIC_AUTH_TOKEN=$PROXY_KEY"
+    info "Skipped. To configure it later, re-run setup or use:"
+    info "  python3 scripts/sync_claude_models.py sync"
+    info "The proxy token remains in .env and was not printed."
     ;;
   *)
     mkdir -p "$(dirname "$CLAUDE_SETTINGS")"
-    PROXY_KEY="$PROXY_KEY" PORT="$PORT" SETTINGS="$CLAUDE_SETTINGS" python3 - <<'PY'
-import json, os
-
-path = os.environ['SETTINGS']
-try:
-    with open(path) as f:
-        settings = json.load(f)
-except (FileNotFoundError, json.JSONDecodeError):
-    settings = {}
-
-settings.setdefault('env', {}).update({
-    'ANTHROPIC_BASE_URL': f"http://localhost:{os.environ['PORT']}",
-    # AUTH_TOKEN (not API_KEY) skips the interactive OAuth login entirely.
-    'ANTHROPIC_AUTH_TOKEN': os.environ['PROXY_KEY'],
-    'CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY': '1',
-})
-
-# Legacy setups pinned ANTHROPIC_MODEL="claude-opus-4.7", which (a) is now
-# hardcoded by Claude Code to render as the retired "Claude Opus 4" (with a
-# deprecation warning) and (b) overrides any /model choice on every restart
-# since env-var precedence beats the persisted model setting. Drop it if
-# present so the top-level "model" key below can actually stick.
-settings.get('env', {}).pop('ANTHROPIC_MODEL', None)
-
-# Default initial model = Kiro's server-side "auto" router. The alias key is
-# prefixed with "claude-" because Claude Code's gateway model discovery
-# hard-drops any /v1/models entry whose id doesn't start with claude/anthropic
-# — the value forwarded to Kiro is still the bare "auto".
-#
-# Idempotency contract with the /update-kiro-models skill: the display key
-# "claude-auto · 1x" is treated as stable (auto is always 1x by definition, so
-# a model-list refresh will never rewrite this specific alias). If the skill
-# ever renames it, it must run this same reset. We DO detect and heal two
-# common broken states below rather than silently leave the user stuck:
-DEFAULT_MODEL = 'claude-auto · 1x'
-current = settings.get('model')
-if current is None:
-    settings['model'] = DEFAULT_MODEL
-elif '·' not in current and (current.startswith('claude-') or current.startswith('anthropic')):
-    # Bare model id (e.g. "claude-opus-4.7") — almost always a leftover from the
-    # old ANTHROPIC_MODEL env-var pattern we dropped above. Reset to the router
-    # so the user doesn't restart into the retired-Opus-4 label.
-    settings['model'] = DEFAULT_MODEL
-# Anything else (a real "claude-<name> · <rate>x · <ctx>" alias the user has
-# actively chosen via /model) is left alone.
-
-with open(path, 'w') as f:
-    json.dump(settings, f, indent=2)
-    f.write('\n')
-PY
-    ok "Configured $CLAUDE_SETTINGS (existing settings preserved)"
+    KIRO_GATEWAY_SETUP_TOKEN="$PROXY_KEY" \
+      python3 "$REPO_DIR/scripts/sync_claude_models.py" sync \
+      --settings "$CLAUDE_SETTINGS" \
+      --state "$REPO_DIR/state.json" \
+      --accounts "$REPO_DIR/credentials.json" \
+      --env-file "$ENV_FILE" \
+      --base-url "http://localhost:$PORT" \
+      --auth-token-env KIRO_GATEWAY_SETUP_TOKEN \
+      || fail "Could not safely synchronize Claude Code settings. Fix the reported error and re-run setup."
+    ok "Configured $CLAUDE_SETTINGS with the dynamic Kiro model catalog"
     ;;
 esac
 
@@ -238,27 +208,10 @@ case "$reply" in
     info "  \"$CREDITS_CMD\""
     ;;
   *)
-    CREDITS_CMD="$CREDITS_CMD" SETTINGS="$CLAUDE_SETTINGS" python3 - <<'PY'
-import json, os
-
-path = os.environ['SETTINGS']
-cmd = os.environ['CREDITS_CMD']
-
-try:
-    with open(path) as f:
-        settings = json.load(f)
-except (FileNotFoundError, json.JSONDecodeError):
-    settings = {}
-
-perms = settings.setdefault('permissions', {})
-allow = perms.setdefault('allow', [])
-if cmd not in allow:
-    allow.append(cmd)
-
-with open(path, 'w') as f:
-    json.dump(settings, f, indent=2)
-    f.write('\n')
-PY
+    python3 "$REPO_DIR/scripts/sync_claude_models.py" permission \
+      --settings "$CLAUDE_SETTINGS" \
+      --command "$CREDITS_CMD" \
+      || fail "Could not safely update Claude Code permissions. Fix the reported error and re-run setup."
     ok "Added kiro-credits to auto-approve in $CLAUDE_SETTINGS"
     ;;
 esac

@@ -47,16 +47,8 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 import httpx  # noqa: E402
-from dotenv import load_dotenv  # noqa: E402
-
 from kiro.auth import KiroAuthManager  # noqa: E402
-from kiro.config import (  # noqa: E402
-    KIRO_CREDS_FILE,
-    KIRO_CLI_DB_FILE,
-    REFRESH_TOKEN,
-    PROFILE_ARN,
-    REGION,
-)
+from kiro.auth_factory import build_auth_manager_from_environment  # noqa: E402
 from kiro.model_discovery import (  # noqa: E402
     ModelDiscoveryError,
     fetch_available_models,
@@ -72,14 +64,13 @@ async def _discover_candidates(auth: KiroAuthManager) -> Optional[List[str]]:
 
     Returns:
         Sorted model IDs including the Kiro ``auto`` router, or ``None`` when
-        discovery fails and the caller should use static candidates.
+        discovery fails and there are no candidates to probe.
     """
     try:
         models = await fetch_available_models(auth)
     except ModelDiscoveryError as exc:
         print(
-            f"⚠️  ListAvailableModels failed ({exc}) — "
-            "falling back to static candidates.",
+            f"⚠️  ListAvailableModels failed ({exc}) — no models discovered.",
             file=sys.stderr,
         )
         return None
@@ -231,27 +222,8 @@ async def _probe_one(
 
 
 def _build_auth_manager() -> KiroAuthManager:
-    """
-    Build an auth manager from the same env the gateway uses. We deliberately
-    do NOT read credentials.json here — that file is for the multi-account
-    system; single-account probing uses the top-level env vars.
-    """
-    load_dotenv()
-
-    if KIRO_CLI_DB_FILE:
-        return KiroAuthManager(sqlite_db=KIRO_CLI_DB_FILE, region=REGION)
-    if KIRO_CREDS_FILE:
-        return KiroAuthManager(creds_file=KIRO_CREDS_FILE, region=REGION)
-    if REFRESH_TOKEN:
-        return KiroAuthManager(
-            refresh_token=REFRESH_TOKEN,
-            profile_arn=PROFILE_ARN,
-            region=REGION,
-        )
-    raise SystemExit(
-        "No credentials found. Set KIRO_CLI_DB_FILE, KIRO_CREDS_FILE, or "
-        "REFRESH_TOKEN in the environment (see .env.example)."
-    )
+    """Build an auth manager from the gateway's dotenv configuration."""
+    return build_auth_manager_from_environment(_REPO_ROOT / ".env")
 
 
 def _print_report(results: List[ProbeResult], api_host: str) -> None:
@@ -324,6 +296,28 @@ def _select_candidates(
     return list(candidates), discover
 
 
+def _result_exit_code(
+    results: List[ProbeResult],
+    discover: bool,
+    discovered: List[str],
+) -> int:
+    """Determine whether a probe run produced trustworthy evidence.
+
+    Args:
+        results: Per-model probe outcomes.
+        discover: Whether the run depended on catalog discovery.
+        discovered: IDs returned by successful discovery.
+
+    Returns:
+        Zero for a completed clean audit, otherwise two.
+    """
+    if discover and not discovered:
+        return 2
+    if any(result.status == STATUS_ERROR for result in results):
+        return 2
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -379,11 +373,7 @@ def main() -> int:
             print(f"\n✓ Discovered {len(discovered)} models from ListAvailableModels (q.amazonaws.com)")
         _print_report(results, api_host)
 
-    # Exit non-zero if any WORKS-candidate probe failed with ERROR — makes it
-    # easy to gate CI or a skill on a clean run.
-    if any(r.status == STATUS_ERROR for r in results):
-        return 2
-    return 0
+    return _result_exit_code(results, discover, discovered)
 
 
 if __name__ == "__main__":

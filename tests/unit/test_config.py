@@ -5,9 +5,11 @@ Unit tests for the configuration module.
 Verifies loading settings from environment variables.
 """
 
-import pytest
 import os
+from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 
 class TestLogLevelConfig:
@@ -515,7 +517,7 @@ class TestKiroCliDbFileConfig:
 
 
 class TestDynamicModelCatalogConfig:
-    """Ensure no model catalog data is hardcoded in configuration."""
+    """Ensure model discovery configuration stays dynamic and checkout-local."""
 
     def test_static_model_catalog_constants_are_absent(self):
         """Keep model availability exclusively in Kiro discovery and LKG state."""
@@ -525,6 +527,15 @@ class TestDynamicModelCatalogConfig:
         assert not hasattr(config_module, "MODEL_ALIASES")
         assert not hasattr(config_module, "HIDDEN_FROM_LIST")
         assert not hasattr(config_module, "HIDDEN_MODELS")
+
+    def test_dotenv_path_is_scoped_to_current_checkout(self):
+        """Worktrees must not discover credentials from a parent checkout."""
+        import kiro.config as config_module
+
+        repository_root = Path(config_module.__file__).resolve().parent.parent
+        assert config_module._REPO_ENV_FILE == repository_root / ".env"
+        assert config_module.ACCOUNTS_CONFIG_FILE == str(repository_root / "credentials.json")
+        assert config_module.ACCOUNTS_STATE_FILE == str(repository_root / "state.json")
 
 
 # ==================================================================================================
@@ -708,8 +719,9 @@ class TestAccountSystemConfig:
         import kiro.config as config_module
         reload(config_module)
         
-        print(f"Comparing ACCOUNTS_CONFIG_FILE: Expected 'credentials.json', Got '{config_module.ACCOUNTS_CONFIG_FILE}'")
-        assert config_module.ACCOUNTS_CONFIG_FILE == "credentials.json"
+        expected = str(Path(config_module.__file__).resolve().parent.parent / "credentials.json")
+        print(f"Comparing ACCOUNTS_CONFIG_FILE: Expected '{expected}', Got '{config_module.ACCOUNTS_CONFIG_FILE}'")
+        assert config_module.ACCOUNTS_CONFIG_FILE == expected
     
     def test_accounts_state_file_default(self, monkeypatch):
         """
@@ -724,8 +736,9 @@ class TestAccountSystemConfig:
         import kiro.config as config_module
         reload(config_module)
         
-        print(f"Comparing ACCOUNTS_STATE_FILE: Expected 'state.json', Got '{config_module.ACCOUNTS_STATE_FILE}'")
-        assert config_module.ACCOUNTS_STATE_FILE == "state.json"
+        expected = str(Path(config_module.__file__).resolve().parent.parent / "state.json")
+        print(f"Comparing ACCOUNTS_STATE_FILE: Expected '{expected}', Got '{config_module.ACCOUNTS_STATE_FILE}'")
+        assert config_module.ACCOUNTS_STATE_FILE == expected
     
     def test_account_recovery_timeout_default(self, monkeypatch):
         """

@@ -20,6 +20,8 @@ from kiro.model_resolver import (
     extract_model_family,
     ModelResolver,
     ModelResolution,
+    build_model_display_id,
+    parse_model_display_id,
     set_known_model_ids,
 )
 from kiro.cache import ModelInfoCache
@@ -1281,6 +1283,18 @@ class TestDynamicModelCatalog:
         ).internal_id == "gpt-5.6-sol"
 
     @pytest.mark.asyncio
+    async def test_catalog_claude_id_is_forwarded_without_normalization(self):
+        """Exact Claude-shaped Kiro IDs remain lossless after picker selection."""
+        cache = ModelInfoCache()
+        await cache.update([{"modelId": "claude-opus-4-8", "rateMultiplier": 2}])
+        resolver = ModelResolver(cache=cache)
+        set_known_model_ids(["claude-opus-4-8"])
+
+        display_id = "claude-opus-4-8 · 2x"
+        assert resolver.resolve(display_id).internal_id == "claude-opus-4-8"
+        assert get_model_id_for_kiro(display_id) == "claude-opus-4-8"
+
+    @pytest.mark.asyncio
     async def test_empty_catalog_exposes_no_models_but_keeps_passthrough(self):
         cache = ModelInfoCache()
         await cache.update([])
@@ -1290,3 +1304,34 @@ class TestDynamicModelCatalog:
         result = resolver.resolve("future-model")
         assert result.internal_id == "future-model"
         assert result.source == "passthrough"
+
+    @pytest.mark.parametrize(
+        "metadata",
+        [
+            {"modelId": "gpt-x"},
+            {"modelId": "gpt-x", "rateMultiplier": 2},
+            {"modelId": "gpt-x", "tokenLimits": {"maxInputTokens": 200000}},
+            {
+                "modelId": "模型-x",
+                "rateMultiplier": 1.5,
+                "tokenLimits": {"maxInputTokens": 1000000},
+            },
+        ],
+    )
+    def test_synthetic_display_id_round_trips_with_optional_metadata(self, metadata):
+        """Every allowlisted synthetic ID resolves to the raw Kiro model ID."""
+        display_id = build_model_display_id(metadata)
+
+        assert parse_model_display_id(display_id) == metadata["modelId"]
+
+    @pytest.mark.parametrize(
+        "display_id",
+        [
+            "claude-kiro-no-length-model",
+            "claude-kiro-99-short",
+            "claude-kiro-3-toolong",
+        ],
+    )
+    def test_malformed_synthetic_display_id_is_preserved(self, display_id):
+        """Malformed gateway-looking IDs remain pass-through values."""
+        assert parse_model_display_id(display_id) == display_id

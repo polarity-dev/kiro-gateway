@@ -90,16 +90,15 @@ prompts. This single script:
 - Resolves the correct `KIRO_API_REGION` from the ARN (the API region usually
   differs from the SSO login region).
 - Generates a random `PROXY_API_KEY` and writes `.env`.
-- Configures `~/.claude/settings.json` to point Claude Code at
-  `http://localhost:8000` using `ANTHROPIC_AUTH_TOKEN` (not `ANTHROPIC_API_KEY`
-  — only the former skips the interactive OAuth browser login), enables
-  gateway model discovery, and sets the initial model to `claude-auto · 1x`
-  (Kiro's server-side auto-router). This is written as the top-level `model`
-  key, not as `ANTHROPIC_MODEL`: the env var overrides `/model` on every launch
-  (so the user's choice never sticks) and, worse, forces Claude Code to render
-  any `claude-opus-4.*` id as the retired *Claude Opus 4* with a deprecation
-  warning. If the runbook finds a legacy `ANTHROPIC_MODEL` in `env`, the
-  installer drops it.
+- Configures `~/.claude/settings.json` atomically: points Claude Code at
+  `http://localhost:8000` with `ANTHROPIC_AUTH_TOKEN`, enables gateway model
+  discovery, and synchronizes Kiro's live display IDs into a non-empty
+  `availableModels` string list with `enforceAvailableModels: true`. This hides
+  Claude Code's built-in model rows across model-selection surfaces. The
+  top-level `model` selection is preserved by underlying Kiro `modelId` when
+  metadata changes; a removed selection falls back to the real `auto` row when
+  available. A legacy `ANTHROPIC_MODEL` is removed because it outranks and
+  prevents persisted `/model` choices.
 
 **If it fails with `Could not find profileArn`:** the user has not sent a
 message in Kiro IDE yet, or Kiro hasn't logged one. Ask them to send a message
@@ -141,15 +140,16 @@ If that prints a list of model IDs, the gateway and Kiro auth are working. Then
 tell the user to open a **new terminal** and run `claude` — inside it, `/model`
 should list models labelled `From gateway`.
 
-**Heads-up on the picker names.** Every entry starts with `claude-` — even the
-non-Claude ones like `claude-auto · 1x`, `claude-minimax-m2.5 · …`, and
-`claude-qwen3-coder-next · …`. That prefix is cosmetic: Claude Code's gateway
-model discovery
-[silently drops any `/v1/models` entry whose id doesn't begin with
-`claude` or `anthropic`](https://code.claude.com/docs/en/llm-gateway-protocol#model-discovery),
-so we prefix the aliases in `MODEL_ALIASES` to get them into the picker. The
-real Kiro modelId (`auto`, `minimax-m2.5`, …) is still what the gateway
-forwards upstream — nothing changes on the wire.
+**Heads-up on picker names.** Claude/Anthropic IDs keep their base name;
+other Kiro IDs are reversibly encoded as `claude-kiro-<length>-<modelId>` so
+Claude Code accepts them during gateway discovery. Rate and context suffixes
+are cosmetic. The gateway decodes every generated row back to the raw Kiro
+`modelId` before forwarding it.
+
+`availableModels` is a static local snapshot. When Kiro changes the catalog,
+run `python3 scripts/sync_claude_models.py sync` (or `/update-kiro-models`).
+User-level enforcement hides built-in rows locally; organization policy still
+requires Claude Code managed settings.
 
 ### Step 5 — Offer to install the kiro-credits skill globally
 

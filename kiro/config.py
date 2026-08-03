@@ -25,56 +25,20 @@ Loads environment variables and provides typed access to them.
 """
 
 import os
-import re
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List
 from dotenv import load_dotenv
 
-# Load environment variables
-load_dotenv()
+from kiro.dotenv_utils import read_raw_dotenv_value
 
+# Load only this checkout's environment. Searching parent directories can leak
+# credentials and region overrides from a different checkout into worktrees.
+# Preserve the pre-load environment separately so exported credential paths keep
+# precedence while dotenv paths can still be read without decoding backslashes.
+_REPO_ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
+_INHERITED_ENVIRONMENT = globals().get("_INHERITED_ENVIRONMENT", dict(os.environ))
+load_dotenv(_REPO_ENV_FILE)
 
-def _get_raw_env_value(var_name: str, env_file: str = ".env") -> Optional[str]:
-    """
-    Read variable value from .env file without processing escape sequences.
-    
-    This is necessary for correct handling of Windows paths where backslashes
-    (e.g., D:\\Projects\\file.json) may be incorrectly interpreted
-    as escape sequences (\\a -> bell, \\n -> newline, etc.).
-    
-    Args:
-        var_name: Environment variable name
-        env_file: Path to .env file (default ".env")
-    
-    Returns:
-        Raw variable value or None if not found
-    """
-    env_path = Path(env_file)
-    if not env_path.exists():
-        return None
-    
-    try:
-        # Read file as-is, without interpretation
-        content = env_path.read_text(encoding="utf-8")
-        
-        # Search for variable considering different formats:
-        # VAR="value" or VAR='value' or VAR=value
-        # Pattern captures value with or without quotes
-        pattern = rf'^{re.escape(var_name)}=(["\']?)(.+?)\1\s*$'
-        
-        for line in content.splitlines():
-            line = line.strip()
-            if line.startswith("#") or not line:
-                continue
-            
-            match = re.match(pattern, line)
-            if match:
-                # Return value as-is, without processing escape sequences
-                return match.group(2)
-    except Exception:
-        pass
-    
-    return None
 
 # ==================================================================================================
 # Server Settings
@@ -149,14 +113,18 @@ REGION: str = os.getenv("KIRO_REGION", "us-east-1")
 # Path to credentials file (optional, alternative to .env)
 # Read directly from .env to avoid escape sequence issues on Windows
 # (e.g., \a in path D:\Projects\adolf is interpreted as bell character)
-_raw_creds_file = _get_raw_env_value("KIRO_CREDS_FILE") or os.getenv("KIRO_CREDS_FILE", "")
+_raw_creds_file = _INHERITED_ENVIRONMENT.get(
+    "KIRO_CREDS_FILE"
+) or read_raw_dotenv_value(_REPO_ENV_FILE, "KIRO_CREDS_FILE") or ""
 # Normalize path for cross-platform compatibility
 KIRO_CREDS_FILE: str = str(Path(_raw_creds_file)) if _raw_creds_file else ""
 
 # Path to kiro-cli SQLite database (optional, for AWS SSO OIDC authentication)
 # Default location: ~/.local/share/kiro-cli/data.sqlite3 (Linux/macOS)
 # or ~/.local/share/amazon-q/data.sqlite3 (amazon-q-developer-cli)
-_raw_cli_db_file = _get_raw_env_value("KIRO_CLI_DB_FILE") or os.getenv("KIRO_CLI_DB_FILE", "")
+_raw_cli_db_file = _INHERITED_ENVIRONMENT.get(
+    "KIRO_CLI_DB_FILE"
+) or read_raw_dotenv_value(_REPO_ENV_FILE, "KIRO_CLI_DB_FILE") or ""
 KIRO_CLI_DB_FILE: str = str(Path(_raw_cli_db_file)) if _raw_cli_db_file else ""
 
 # Disable SQLite write-back (read-only mode)
@@ -427,10 +395,14 @@ WEB_SEARCH_ENABLED: bool = os.getenv("WEB_SEARCH_ENABLED", "true").lower() in ("
 ACCOUNT_SYSTEM: bool = os.getenv("ACCOUNT_SYSTEM", "false").lower() in ("true", "1", "yes")
 
 # Path to credentials configuration file
-ACCOUNTS_CONFIG_FILE: str = os.getenv("ACCOUNTS_CONFIG_FILE", "credentials.json")
+ACCOUNTS_CONFIG_FILE: str = os.getenv(
+    "ACCOUNTS_CONFIG_FILE", str(_REPO_ENV_FILE.parent / "credentials.json")
+)
 
 # Path to runtime state file
-ACCOUNTS_STATE_FILE: str = os.getenv("ACCOUNTS_STATE_FILE", "state.json")
+ACCOUNTS_STATE_FILE: str = os.getenv(
+    "ACCOUNTS_STATE_FILE", str(_REPO_ENV_FILE.parent / "state.json")
+)
 
 # ==================================================================================================
 # Circuit Breaker Settings

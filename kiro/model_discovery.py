@@ -8,6 +8,7 @@
 """Shared model discovery through Kiro's legacy Q endpoint."""
 
 import json
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -15,6 +16,7 @@ from fastapi import HTTPException
 
 from kiro.auth import KiroAuthManager
 from kiro.http_client import KiroHttpClient
+from kiro.model_resolver import build_model_display_id, set_known_model_ids
 
 
 LIST_AVAILABLE_MODELS_TARGET = "AmazonCodeWhispererService.ListAvailableModels"
@@ -22,6 +24,84 @@ LIST_AVAILABLE_MODELS_TARGET = "AmazonCodeWhispererService.ListAvailableModels"
 
 class ModelDiscoveryError(RuntimeError):
     """Raised when Kiro's model catalog cannot be fetched or parsed."""
+
+
+def validate_model_catalog(catalog: object) -> List[Dict[str, Any]]:
+    """Return valid model metadata entries from a catalog-like value.
+
+    Args:
+        catalog: Value expected to contain Kiro model metadata dictionaries.
+
+    Returns:
+        Entries with a non-empty string ``modelId``. Invalid entries are ignored.
+    """
+    if not isinstance(catalog, list):
+        return []
+    return [
+        model
+        for model in catalog
+        if isinstance(model, dict)
+        and isinstance(model.get("modelId"), str)
+        and model["modelId"]
+    ]
+
+
+def build_catalog_display_ids(catalog: object) -> List[str]:
+    """Build deterministic Claude Code model IDs from Kiro metadata.
+
+    Args:
+        catalog: Kiro model metadata list.
+
+    Returns:
+        Sorted, deduplicated display IDs.
+
+    Raises:
+        ModelDiscoveryError: If the catalog has no valid model metadata.
+    """
+    models = validate_model_catalog(catalog)
+    if not models:
+        raise ModelDiscoveryError("Model catalog contains no valid model IDs")
+    set_known_model_ids([model["modelId"] for model in models])
+    return sorted({build_model_display_id(model) for model in models})
+
+
+def load_state_model_catalog(state_path: Path) -> List[Dict[str, Any]]:
+    """Load the union of last-known-good account catalogs from state.json.
+
+    Args:
+        state_path: Gateway state file written by ``AccountManager``.
+
+    Returns:
+        Valid model metadata from all persisted accounts, deduplicated by their
+        complete metadata representation. Missing files return an empty list.
+
+    Raises:
+        ModelDiscoveryError: If the state file is unreadable or malformed.
+    """
+    if not state_path.exists():
+        return []
+    try:
+        payload = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ModelDiscoveryError(f"Cannot read model state from {state_path}: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise ModelDiscoveryError(f"Model state in {state_path} must be a JSON object")
+
+    accounts = payload.get("accounts", {})
+    if not isinstance(accounts, dict):
+        raise ModelDiscoveryError(f"Model state in {state_path} has invalid accounts")
+
+    models: List[Dict[str, Any]] = []
+    seen_model_ids: set[str] = set()
+    for account in accounts.values():
+        if not isinstance(account, dict):
+            continue
+        for model in validate_model_catalog(account.get("model_catalog", [])):
+            model_id = model["modelId"]
+            if model_id not in seen_model_ids:
+                seen_model_ids.add(model_id)
+                models.append(model)
+    return models
 
 
 async def fetch_available_models(
@@ -91,13 +171,7 @@ async def fetch_available_models(
                 "ListAvailableModels response is missing the models list"
             )
 
-        valid_models = [
-            model
-            for model in models
-            if isinstance(model, dict)
-            and isinstance(model.get("modelId"), str)
-            and model["modelId"]
-        ]
+        valid_models = validate_model_catalog(models)
         if not valid_models:
             raise ModelDiscoveryError(
                 "ListAvailableModels returned no valid model IDs"

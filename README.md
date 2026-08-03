@@ -80,8 +80,11 @@ The installer resolves both:
 | `PROFILE_ARN` | Read from Kiro IDE logs at `~/Library/Application Support/Kiro/logs/*/exthost/kiro.kiroAgent/q-client.log` | The AWS SSO OIDC refresh flow never returns it, and `ListAvailableProfiles` returns an empty list for Enterprise accounts. The profile ID is an opaque string that cannot be derived from your AWS account settings. |
 | `KIRO_API_REGION` | Parsed from the region field of the discovered ARN | Your SSO region (where you log in) and your subscription's API region are usually different. DNS probing is unreliable because several `runtime.*.kiro.dev` hosts resolve regardless of where your subscription lives. |
 
-It also generates a random `PROXY_API_KEY`, writes `.env`, and configures
-`~/.claude/settings.json` for Claude Code while preserving any existing settings.
+It also generates a random `PROXY_API_KEY`, writes `.env`, and atomically merges
+Claude Code settings. Setup discovers Kiro's current catalog directly, writes its
+exact display IDs as a non-empty `availableModels` string list, and enables
+`enforceAvailableModels` so built-in Claude Code model rows stay hidden. Existing
+unrelated settings and a still-valid selected model are preserved.
 
 The script is safe to re-run: it backs up `.env` to `.env.bak` and prompts before
 overwriting anything.
@@ -152,7 +155,16 @@ curl -s localhost:8000/v1/models -H "Authorization: Bearer $PROXY_API_KEY" \
   | python3 -c "import sys,json; print('\n'.join(m['id'] for m in json.load(sys.stdin)['data']))"
 ```
 
-To pin a default, set `ANTHROPIC_MODEL` in the `env` block of `~/.claude/settings.json`.
+Choose a persistent default with `/model` or the top-level `model` setting. Do not
+set `ANTHROPIC_MODEL`: it has higher precedence and overrides the saved picker choice.
+When Kiro adds or removes models, refresh the static local allowlist with:
+
+```bash
+python3 scripts/sync_claude_models.py sync
+```
+
+Use `--check` to detect drift without writing. The user-level allowlist is local
+configuration, not an administrative policy boundary.
 
 ---
 
@@ -188,29 +200,15 @@ carry fork-specific changes.
 
 ---
 
-## 🤖 Available Models (Free List)
+## 🤖 Available Models
 
-> ⚠️ **Important:** Model availability depends on your Kiro tier (free/paid). The gateway provides access to whatever models are available in your IDE or CLI based on your subscription. The list below shows models commonly available on the **free tier**.
+Model availability is discovered from Kiro for the authenticated subscription and
+region; this repository intentionally contains no authoritative static model list.
+Inspect the current gateway catalog with authenticated `GET /v1/models`, or run
+`python3 scripts/sync_claude_models.py sync` to refresh Claude Code's picker.
 
-> 🔒 **Claude Opus 4.5** was removed from the free tier on January 17, 2026. It may be available on paid tiers — check your IDE/CLI model list.
-
-🚀 **Claude Sonnet 4.5** — Balanced performance. Great for coding, writing, and general-purpose tasks.
-
-⚡ **Claude Haiku 4.5** — Lightning fast. Perfect for quick responses, simple tasks, and chat.
-
-📦 **Claude Sonnet 4** — Previous generation. Still powerful and reliable for most use cases.
-
-💤 **GLM-5** — Open MoE model (744B params, 40B active). Advanced model for complex systems engineering and long-horizon agentic tasks.
-
-🐋 **DeepSeek-V3.2** — Open MoE model (685B params, 37B active). Balanced performance for coding, reasoning, and general tasks.
-
-🧩 **MiniMax M2.5** — Open MoE model (230B params, 10B active). Enhanced version with improved reasoning and task handling.
-
-🧩 **MiniMax M2.1** — Open MoE model (230B params, 10B active). Great for complex tasks, planning, and multi-step workflows.
-
-🤖 **Qwen3-Coder-Next** — Open MoE model (80B params, 3B active). Coding-focused. Excellent for development and large projects.
-
-> 💡 **Smart Model Resolution:** Use any model name format — `claude-sonnet-4-5`, `claude-sonnet-4.5`, or even versioned names like `claude-sonnet-4-5-20250929`. The gateway normalizes them automatically.
+Non-Claude Kiro IDs are exposed through reversible `claude-kiro-<length>-...`
+rows, then decoded back to their raw Kiro `modelId` before inference.
 
 ---
 

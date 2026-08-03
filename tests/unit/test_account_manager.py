@@ -779,12 +779,12 @@ class TestAccountManagerInitializeAccount:
     @pytest.mark.asyncio
     async def test_initialize_account_fetch_models_fallback(self, tmp_path):
         """
-        Test fallback to FALLBACK_MODELS when API fails.
-        
-        What it does: Initializes account when ListAvailableModels fails
-        Purpose: Verify fallback mechanism
+        Test last-known-good behavior when model discovery fails.
+
+        What it does: Initializes an account without replacing its saved catalog
+        Purpose: Verify the gateway never invents a static fallback catalog
         """
-        print("\n=== Test: initialize_account with fallback models ===")
+        print("\n=== Test: initialize_account with last-known-good models ===")
         
         # Arrange
         test_json = tmp_path / "test.json"
@@ -1250,6 +1250,26 @@ class TestAccountManagerGetFirstAccount:
         # Act & Assert
         with pytest.raises(RuntimeError, match="No initialized accounts available"):
             manager.get_first_account()
+
+
+class TestAccountManagerCatalogRefresh:
+    """Regression tests for catalog refresh after startup failures."""
+
+    @pytest.mark.asyncio
+    async def test_zero_timestamp_retries_discovery_on_next_request(self, tmp_path):
+        """An initial empty catalog does not remain permanently stuck."""
+        manager = AccountManager(
+            credentials_file=str(tmp_path / "credentials.json"),
+            state_file=str(tmp_path / "state.json"),
+        )
+        account = Account(id="account", auth_manager=Mock())
+        manager._accounts[account.id] = account
+        manager._refresh_account_models = AsyncMock()
+
+        selected = await manager.get_next_account("future-model")
+
+        assert selected is account
+        manager._refresh_account_models.assert_awaited_once_with(account.id)
 
 
 class TestAccountManagerGetAllAvailableModels:
