@@ -47,17 +47,17 @@ from loguru import logger
 
 from kiro.auth import KiroAuthManager
 from kiro.cache import ModelInfoCache
-from kiro.model_resolver import ModelResolver, normalize_model_name
+from kiro.model_resolver import (
+    ModelResolver,
+    normalize_model_name,
+    set_known_model_ids,
+)
 from kiro.config import (
-    HIDDEN_MODELS,
-    MODEL_ALIASES,
-    HIDDEN_FROM_LIST,
     ACCOUNT_RECOVERY_TIMEOUT,
     ACCOUNT_MAX_BACKOFF_MULTIPLIER,
     ACCOUNT_PROBABILISTIC_RETRY_CHANCE,
     ACCOUNT_CACHE_TTL,
     STATE_SAVE_INTERVAL_SECONDS,
-    FALLBACK_MODELS,
 )
 from kiro.account_errors import ErrorType
 from kiro.http_client import KiroHttpClient
@@ -131,6 +131,7 @@ class Account:
     failures: int = 0
     last_failure_time: float = 0.0
     models_cached_at: float = 0.0
+    model_catalog: List[Dict] = field(default_factory=list)
     stats: AccountStats = field(default_factory=AccountStats)
 
 
@@ -328,7 +329,15 @@ class AccountManager:
                     account.failures = data.get("failures", 0)
                     account.last_failure_time = data.get("last_failure_time", 0.0)
                     account.models_cached_at = data.get("models_cached_at", 0.0)
-                    
+                    catalog = data.get("model_catalog", [])
+                    if isinstance(catalog, list):
+                        account.model_catalog = [
+                            model for model in catalog
+                            if isinstance(model, dict)
+                            and isinstance(model.get("modelId"), str)
+                            and model["modelId"]
+                        ]
+
                     stats_data = data.get("stats", {})
                     account.stats = AccountStats(
                         total_requests=stats_data.get("total_requests", 0),
@@ -336,6 +345,7 @@ class AccountManager:
                         failed_requests=stats_data.get("failed_requests", 0)
                     )
             
+            self._refresh_known_model_ids()
             logger.info(f"Loaded state: {len(self._model_to_accounts)} model mappings, {len(self._accounts)} accounts")
         
         except Exception as e:
@@ -354,6 +364,7 @@ class AccountManager:
                     "failures": account.failures,
                     "last_failure_time": account.last_failure_time,
                     "models_cached_at": account.models_cached_at,
+                    "model_catalog": account.model_catalog,
                     "stats": {
                         "total_requests": account.stats.total_requests,
                         "successful_requests": account.stats.successful_requests,
@@ -400,6 +411,38 @@ class AccountManager:
                     await self._save_state()
                     self._dirty = False
     
+    def _refresh_known_model_ids(self) -> None:
+        """Refresh raw IDs used to decode legacy saved display names."""
+        set_known_model_ids([
+            model["modelId"]
+            for account in self._accounts.values()
+            for model in account.model_catalog
+            if isinstance(model.get("modelId"), str) and model["modelId"]
+        ])
+
+    def _replace_account_model_mappings(
+        self,
+        account_id: str,
+        available_models: List[str],
+    ) -> None:
+        """Replace one account's model mappings without leaving stale entries.
+
+        Args:
+            account_id: Account whose catalog changed.
+            available_models: Current generated display IDs for the account.
+        """
+        for model in list(self._model_to_accounts):
+            mapping = self._model_to_accounts[model]
+            if account_id in mapping.accounts:
+                mapping.accounts.remove(account_id)
+            if not mapping.accounts:
+                del self._model_to_accounts[model]
+
+        for model in available_models:
+            mapping = self._model_to_accounts.setdefault(model, ModelAccountList())
+            if account_id not in mapping.accounts:
+                mapping.accounts.append(account_id)
+
     async def _initialize_account(self, account_id: str) -> bool:
         """
         Initialize account (lazy initialization).
@@ -474,51 +517,32 @@ class AccountManager:
                     auth_manager,
                     http_client=http_client,
                 )
+                account.model_catalog = models_list
+                account.models_cached_at = time.time()
                 logger.debug(
                     f"Account {account_id}: Discovered {len(models_list)} models "
                     "from the legacy Q endpoint"
                 )
             except ModelDiscoveryError as exc:
-                logger.error(
-                    f"Failed to discover models for {account_id}: {exc}"
-                )
+                models_list = account.model_catalog
                 logger.warning(
-                    "Using pre-configured fallback models. Models will be "
-                    "refreshed on the next TTL cycle when discovery recovers."
+                    f"Model discovery failed for {account_id}; using "
+                    f"{len(models_list)} last-known-good models: {exc}"
                 )
-                models_list = FALLBACK_MODELS
             finally:
                 await http_client.close()
-            
-            # Create model cache and update
+
             model_cache = ModelInfoCache()
             await model_cache.update(models_list)
-            
-            # Add hidden models
-            for display_name, internal_id in HIDDEN_MODELS.items():
-                model_cache.add_hidden_model(display_name, internal_id)
-            
-            # Create model resolver
-            model_resolver = ModelResolver(
-                cache=model_cache,
-                hidden_models=HIDDEN_MODELS,
-                aliases=MODEL_ALIASES,
-                hidden_from_list=HIDDEN_FROM_LIST
-            )
-            
-            # Update account
+            model_resolver = ModelResolver(cache=model_cache)
+
             account.auth_manager = auth_manager
             account.model_cache = model_cache
             account.model_resolver = model_resolver
-            account.models_cached_at = time.time()
-            
-            # Update model_to_accounts mapping
+
+            self._refresh_known_model_ids()
             available_models = model_resolver.get_available_models()
-            for model in available_models:
-                if model not in self._model_to_accounts:
-                    self._model_to_accounts[model] = ModelAccountList()
-                if account_id not in self._model_to_accounts[model].accounts:
-                    self._model_to_accounts[model].accounts.append(account_id)
+            self._replace_account_model_mappings(account_id, available_models)
             
             logger.info(f"Initialized account: {account_id} ({len(available_models)} models)")
             self._dirty = True
@@ -553,15 +577,15 @@ class AccountManager:
             await http_client.close()
 
         await account.model_cache.update(models_list)
+        account.model_catalog = models_list
         account.models_cached_at = time.time()
+        self._refresh_known_model_ids()
 
         if account.model_resolver:
-            available_models = account.model_resolver.get_available_models()
-            for model in available_models:
-                if model not in self._model_to_accounts:
-                    self._model_to_accounts[model] = ModelAccountList()
-                if account_id not in self._model_to_accounts[model].accounts:
-                    self._model_to_accounts[model].accounts.append(account_id)
+            self._replace_account_model_mappings(
+                account_id,
+                account.model_resolver.get_available_models(),
+            )
 
         logger.debug(
             f"Refreshed {len(models_list)} models for account {account_id}"
@@ -712,7 +736,7 @@ class AccountManager:
             self._dirty = True
             
             # Dynamic learning: add model to mapping if successful
-            # This allows system to learn about new models not in FALLBACK_MODELS
+            # This allows the system to learn models discovered at runtime.
             normalized_model = normalize_model_name(model)
             if normalized_model not in self._model_to_accounts:
                 self._model_to_accounts[normalized_model] = ModelAccountList()

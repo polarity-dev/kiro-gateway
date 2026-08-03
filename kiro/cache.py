@@ -163,13 +163,20 @@ class ModelInfoCache:
         return time.time() - self._last_update > self._cache_ttl
     
     def get_all_model_ids(self) -> List[str]:
-        """
-        Returns a list of all model IDs in the cache.
-        
+        """Return all cached model IDs.
+
         Returns:
-            List of model IDs
+            List of raw Kiro model IDs.
         """
         return list(self._cache.keys())
+
+    def get_all_models(self) -> List[Dict[str, Any]]:
+        """Return copies of all cached model metadata.
+
+        Returns:
+            Model metadata dictionaries in cache insertion order.
+        """
+        return [model.copy() for model in self._cache.values()]
     
     @property
     def size(self) -> int:

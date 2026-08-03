@@ -821,8 +821,13 @@ class TestAccountManagerInitializeAccount:
         
         # Assert
         print(f"Initialization success: {success}")
-        assert success is True  # Should succeed with fallback
-        assert manager._accounts[account_id].model_cache is not None
+        assert success is True
+        account = manager._accounts[account_id]
+        assert account.model_cache is not None
+        assert account.model_cache.is_empty()
+        assert account.model_catalog == []
+        assert account.model_resolver.get_available_models() == []
+        assert account.model_resolver.resolve("future-model").internal_id == "future-model"
 
 
 class TestAccountManagerGetNextAccount:
@@ -1141,6 +1146,34 @@ class TestAccountManagerSaveState:
         tmp_file = tmp_path / "state.json.tmp"
         print(f"Tmp file exists: {tmp_file.exists()}")
         assert not tmp_file.exists()
+
+    @pytest.mark.asyncio
+    async def test_model_catalog_round_trips_through_state(self, tmp_path):
+        """Persist and reload the per-account last-known-good catalog."""
+        test_json = tmp_path / "test.json"
+        test_json.write_text(json.dumps({"refreshToken": "token"}))
+        creds_file = tmp_path / "credentials.json"
+        creds_file.write_text(json.dumps([
+            {"type": "json", "path": str(test_json), "enabled": True}
+        ]))
+        state_file = tmp_path / "state.json"
+        catalog = [{
+            "modelId": "future-model",
+            "rateMultiplier": 0.5,
+            "tokenLimits": {"maxInputTokens": 123000},
+        }]
+
+        manager = AccountManager(str(creds_file), str(state_file))
+        await manager.load_credentials()
+        account_id = str(test_json.resolve())
+        manager._accounts[account_id].model_catalog = catalog
+        await manager._save_state()
+
+        restored = AccountManager(str(creds_file), str(state_file))
+        await restored.load_credentials()
+        await restored.load_state()
+
+        assert restored._accounts[account_id].model_catalog == catalog
 
 
 class TestAccountManagerGetFirstAccount:
