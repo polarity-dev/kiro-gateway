@@ -72,6 +72,7 @@ pytest -n auto
 tests/
 ├── conftest.py                      # Shared fixtures and utilities
 ├── unit/                            # Unit tests for individual components
+│   ├── test_account_config.py      # Setup account reconciliation, dotenv preservation, and stable preference tests
 │   ├── test_account_errors.py      # Account System error classification (FATAL vs RECOVERABLE)
 │   ├── test_account_manager.py     # AccountManager tests (failover, Circuit Breaker, sticky behavior, state persistence)
 │   ├── test_auth_factory.py        # Environment-backed auth construction for scripts
@@ -86,7 +87,9 @@ tests/
 │   ├── test_debug_middleware.py    # DebugLoggerMiddleware tests (endpoint filtering, mode handling)
 │   ├── test_exceptions.py          # Exception handlers tests (validation_exception_handler, sanitize_validation_errors)
 │   ├── test_http_client.py         # KiroHttpClient tests (including params parameter for Account System)
+│   ├── test_idc_bootstrap.py       # IAM Identity Center protocol, polling, profile discovery, and persistence tests
 │   ├── test_kiro_errors.py         # Kiro API error enhancement tests (CONTENT_LENGTH_EXCEEDS_THRESHOLD, unknown errors)
+│   ├── test_kiro_login.py          # Direct IdC CLI visibility, browser handoff, secret-safety, and cancellation tests
 │   ├── test_main_cli.py            # CLI argument parsing tests (--host, --port)
 │   ├── test_main_lifespan.py       # Application lifespan tests (Account System initialization, legacy migration, background tasks)
 │   ├── test_mcp_tools.py           # MCP Tools tests (WebSearch: ID generation, MCP API calls, SSE emulation, query extraction)

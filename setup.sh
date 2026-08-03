@@ -6,9 +6,10 @@
 # assigned Amazon Q Developer profile without Kiro IDE or Kiro CLI. Without it,
 # the legacy Kiro IDE credential/log path remains available.
 #
-# Pass -y/--yes to accept setup prompts; browser device approval is still
-# required. Use --port PORT to persist a custom port or --check-port to verify
-# that the gateway, Claude Code, and the optional zsh helper stay aligned.
+# Pass -y/--yes to accept local setup prompts; IAM Identity Center approval is
+# still required. Keep direct login in a visible foreground terminal and approve
+# only when the browser code exactly matches the printed Code: value. Use
+# --port PORT to persist a custom port or --check-port to verify alignment.
 
 set -euo pipefail
 
@@ -25,6 +26,41 @@ PORT_REQUESTED=0
 CHECK_PORT=0
 AWS_PROFILE_NAME=""
 Q_PROFILE_SELECTOR=""
+NO_BROWSER=0
+AGENT_EVENTS=0
+SETUP_STAGE="arguments"
+SETUP_COMPLETED=0
+
+# Detect event mode before parsing so argument failures also have a terminal
+# event. In this mode stdout is a strict allowlisted JSONL channel; all human
+# and third-party output is redirected to stderr.
+for setup_arg in "$@"; do
+  if [ "$setup_arg" = "--agent-events" ]; then
+    AGENT_EVENTS=1
+    break
+  fi
+done
+if [ "$AGENT_EVENTS" -eq 1 ]; then
+  exec 3>&1
+  exec 1>&2
+fi
+
+emit_setup_event() {
+  [ "$AGENT_EVENTS" -eq 1 ] || return 0
+  printf '{"event":"KIRO_EVENT","scope":"setup","type":"%s","stage":"%s","category":"%s"}\n' \
+    "$1" "$SETUP_STAGE" "$2" >&3
+}
+finish_setup_events() {
+  status=$?
+  if [ "$SETUP_COMPLETED" -eq 1 ] && [ "$status" -eq 0 ]; then
+    emit_setup_event "setup_succeeded" "success"
+  elif [ "$status" -eq 130 ]; then
+    emit_setup_event "setup_cancelled" "cancelled"
+  elif [ "$status" -ne 0 ]; then
+    emit_setup_event "setup_failed" "failed"
+  fi
+}
+trap finish_setup_events EXIT
 
 info()  { printf '  %s\n' "$*"; }
 ok()    { printf '  \033[32m✓\033[0m %s\n' "$*"; }
@@ -43,8 +79,8 @@ ask() {
   esac
 }
 
-# Non-interactive mode accepts setup prompts. Device authorization still needs
-# browser approval; multiple Q profiles require an explicit --q-profile.
+# --yes accepts local setup prompts only. IAM Identity Center authorization
+# remains an interactive user approval; multiple Q profiles need --q-profile.
 ASSUME_YES=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -74,6 +110,14 @@ while [ "$#" -gt 0 ]; do
       [ -n "$Q_PROFILE_SELECTOR" ] || fail "--q-profile requires a profile name or ARN"
       shift
       ;;
+    --no-browser)
+      NO_BROWSER=1
+      shift
+      ;;
+    --agent-events)
+      AGENT_EVENTS=1
+      shift
+      ;;
     --port)
       [ "$#" -ge 2 ] && [ -n "$2" ] && [[ "$2" != -* ]] \
         || fail "--port requires a value (try --help)"
@@ -94,14 +138,18 @@ while [ "$#" -gt 0 ]; do
     -h|--help)
       cat <<EOF
 Usage: $0 [-y|--yes] [--aws-profile NAME] [--q-profile NAME_OR_ARN]
-          [--port PORT] [--check-port]
+          [--no-browser] [--agent-events] [--port PORT] [--check-port]
 
   --aws-profile NAME       Log in directly through an AWS CLI IdC profile.
   --q-profile NAME_OR_ARN  Select among multiple Q Developer profiles.
+  --no-browser             Print the approval URL without opening a browser.
+  --agent-events           Emit only allowlisted KIRO_EVENT JSONL on stdout.
   --port PORT              Persist a custom port (1-65535).
   --check-port             Verify .env, Claude Code, and the optional zsh helper.
-  -y, --yes                Accept setup prompts; browser approval remains required.
+  -y, --yes                Accept local setup prompts only; IdC approval remains required.
 
+Keep this command in a visible foreground terminal. Approve the AWS IAM Identity
+Center request only if its code matches the printed Code: value exactly.
 Without --aws-profile, setup reuses existing Kiro IDE credentials.
 EOF
       exit 0
@@ -112,10 +160,15 @@ done
 
 [ -z "$Q_PROFILE_SELECTOR" ] || [ -n "$AWS_PROFILE_NAME" ] \
   || fail "--q-profile requires --aws-profile"
-[ "$CHECK_PORT" -eq 0 ] || { [ -z "$AWS_PROFILE_NAME" ] && [ -z "$Q_PROFILE_SELECTOR" ]; } \
+[ "$NO_BROWSER" -eq 0 ] || [ -n "$AWS_PROFILE_NAME" ] \
+  || fail "--no-browser requires --aws-profile"
+[ "$AGENT_EVENTS" -eq 0 ] || [ -n "$AWS_PROFILE_NAME" ] \
+  || fail "--agent-events requires --aws-profile"
+[ "$CHECK_PORT" -eq 0 ] || { [ -z "$AWS_PROFILE_NAME" ] && [ -z "$Q_PROFILE_SELECTOR" ] && [ "$NO_BROWSER" -eq 0 ] && [ "$AGENT_EVENTS" -eq 0 ]; } \
   || fail "Use --check-port without authentication options"
 
 # ---------------------------------------------------------------------------
+SETUP_STAGE="prerequisites"
 step "1/7  Checking prerequisites"
 
 command -v python3 >/dev/null || fail "python3 not found. Install Python 3.10+ first."
@@ -209,6 +262,7 @@ if [ -n "$AWS_PROFILE_NAME" ] && [ -e "$DIRECT_CREDS_FILE" ]; then
 fi
 
 # ---------------------------------------------------------------------------
+SETUP_STAGE="identity_center_login"
 step "2/7  Obtaining Kiro credentials"
 
 if [ -n "$AWS_PROFILE_NAME" ]; then
@@ -216,10 +270,28 @@ if [ -n "$AWS_PROFILE_NAME" ]; then
   # kiro_login.py completes OIDC and bearer ListAvailableProfiles discovery.
   LOGIN_ARGS=(--aws-profile "$AWS_PROFILE_NAME" --output "$CREDS_FILE")
   [ -z "$Q_PROFILE_SELECTOR" ] || LOGIN_ARGS+=(--q-profile "$Q_PROFILE_SELECTOR")
+  [ "$NO_BROWSER" -eq 0 ] || LOGIN_ARGS+=(--no-browser)
+  [ "$AGENT_EVENTS" -eq 0 ] || LOGIN_ARGS+=(--agent-events)
   [ "$LOGIN_ARGS_FORCE" -eq 0 ] || LOGIN_ARGS+=(--force)
-  python3 "$REPO_DIR/scripts/kiro_login.py" "${LOGIN_ARGS[@]}" \
-    || fail "IAM Identity Center login failed. Review the message above and retry."
-  ok "Direct IAM Identity Center credentials created"
+  if [ "$AGENT_EVENTS" -eq 1 ]; then
+    if python3 "$REPO_DIR/scripts/kiro_login.py" "${LOGIN_ARGS[@]}" >&3; then
+      login_status=0
+    else
+      login_status=$?
+    fi
+  elif python3 "$REPO_DIR/scripts/kiro_login.py" "${LOGIN_ARGS[@]}"; then
+    login_status=0
+  else
+    login_status=$?
+  fi
+  if [ "$login_status" -eq 0 ]; then
+    ok "Direct IAM Identity Center credentials created"
+  elif [ "$login_status" -eq 130 ]; then
+    warn "IAM Identity Center login cancelled; rerun setup to request a fresh code."
+    exit 130
+  else
+    fail "IAM Identity Center login failed. Review the message above and retry with a fresh code."
+  fi
 else
   [ -f "$CREDS_FILE" ] || fail \
     "$CREDS_FILE not found. Log in to Kiro IDE, or use --aws-profile NAME."
@@ -248,6 +320,7 @@ API_REGION=$(printf '%s\n' "$CREDENTIAL_METADATA" | sed -n '3p')
 ok "Credentials loaded (SSO region: ${SSO_REGION:-unknown})"
 
 # ---------------------------------------------------------------------------
+SETUP_STAGE="profile_discovery"
 step "3/7  Resolving Q Developer profile"
 
 if [ -z "$PROFILE_ARN" ] && [ -z "$AWS_PROFILE_NAME" ] && [ -d "$KIRO_LOGS" ]; then
@@ -264,6 +337,7 @@ fi
 ok "Q Developer profile: $PROFILE_ARN"
 
 # ---------------------------------------------------------------------------
+SETUP_STAGE="api_region"
 step "4/7  Determining Q API region"
 
 ARN_REGION=$(printf '%s' "$PROFILE_ARN" | cut -d: -f4)
@@ -282,21 +356,34 @@ fi
 ok "API region: $API_REGION"
 
 # ---------------------------------------------------------------------------
+SETUP_STAGE="environment"
 step "5/7  Writing .env"
 
-PROXY_KEY=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')
-cat > "$ENV_FILE" <<EOF
-# Kiro Gateway configuration — generated by setup.sh
-PROXY_API_KEY="$PROXY_KEY"
-KIRO_CREDS_FILE="$CREDS_FILE"
-KIRO_API_REGION="$API_REGION"
-PROFILE_ARN="$PROFILE_ARN"
-SERVER_PORT="$PORT"
-DEBUG_MODE=off
-EOF
-ok "Wrote $ENV_FILE"
+PROXY_KEY=$(PYTHONPATH="$REPO_DIR${PYTHONPATH:+:$PYTHONPATH}" python3 - "$ENV_FILE" <<'PY'
+import secrets
+import sys
+from pathlib import Path
+from kiro.dotenv_utils import read_raw_dotenv_value
+path = Path(sys.argv[1])
+existing = read_raw_dotenv_value(path, "PROXY_API_KEY")
+print(existing or secrets.token_urlsafe(32))
+PY
+) || fail "Could not preserve or generate the gateway proxy key"
+KIRO_GATEWAY_SETUP_TOKEN="$PROXY_KEY" \
+  python3 "$REPO_DIR/scripts/reconcile_setup_config.py" \
+    --env-file "$ENV_FILE" \
+    --accounts "$REPO_DIR/credentials.json" \
+    --state "$REPO_DIR/state.json" \
+    --credential "$CREDS_FILE" \
+    --api-region "$API_REGION" \
+    --profile-arn "$PROFILE_ARN" \
+    --port "$PORT" \
+    --proxy-key-env KIRO_GATEWAY_SETUP_TOKEN \
+  || fail "Could not reconcile gateway credential configuration; existing files were preserved where possible."
+ok "Reconciled $ENV_FILE and selected $CREDS_FILE"
 
 # ---------------------------------------------------------------------------
+SETUP_STAGE="claude_settings"
 step "6/7  Configuring Claude Code"
 
 if [ "$ASSUME_YES" -eq 1 ]; then
@@ -319,6 +406,7 @@ case "$reply" in
       --state "$REPO_DIR/state.json" \
       --accounts "$REPO_DIR/credentials.json" \
       --env-file "$ENV_FILE" \
+      --prefer-env \
       --base-url "http://localhost:$PORT" \
       --auth-token-env KIRO_GATEWAY_SETUP_TOKEN \
       || fail "Could not safely synchronize Claude Code settings. Fix the reported error and re-run setup."
@@ -327,6 +415,7 @@ case "$reply" in
 esac
 
 # ---------------------------------------------------------------------------
+SETUP_STAGE="permissions"
 step "7/7  Auto-approve kiro-credits skill"
 
 CREDITS_CMD='Bash(python3 ~/.claude/skills/kiro-credits/check.py)'
@@ -353,7 +442,7 @@ esac
 
 # ---------------------------------------------------------------------------
 # Optional: SwiftBar menu bar widget (macOS only)
-if [ "$(uname)" = "Darwin" ] && [ -f "$REPO_DIR/scripts/swiftbar/install.sh" ]; then
+if [ "$AGENT_EVENTS" -eq 0 ] && [ "$(uname)" = "Darwin" ] && [ -f "$REPO_DIR/scripts/swiftbar/install.sh" ]; then
   printf '\n'
   step "Optional: Menu bar credit widget"
   info "Show live Kiro credits in your macOS menu bar (⚡️used/cap, refreshes every 60s)."
@@ -390,8 +479,10 @@ $(printf '\033[1mSetup complete.\033[0m')
   Switch model:         /model inside Claude Code
 EOF
 
+SETUP_STAGE="verification"
 if python3 "$REPO_DIR/scripts/manage_gateway_port.py" "${PORT_ARGS[@]}" check; then
   ok "Gateway, Claude Code, and shell helper ports are aligned"
 else
   warn "Setup finished, but port alignment needs attention; follow the check output above."
 fi
+SETUP_COMPLETED=1

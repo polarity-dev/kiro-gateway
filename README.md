@@ -15,7 +15,7 @@ Made with ❤️ by [@Jwadow](https://github.com/jwadow)
 
 *Use Claude models from Kiro with Claude Code, OpenCode, OpenClaw, Claw Code, Codex app, Cursor, Cline, Roo Code, Kilo Code, Obsidian, OpenAI SDK, LangChain, Continue and other OpenAI or Anthropic compatible tools*
 
-[Models](#-supported-models) • [Features](#-features) • [Quick Start](#-quick-start) • [Configuration](#%EF%B8%8F-configuration) • [💖 Sponsor](#-support-the-project)
+[Models](#-supported-models) • [Features](#-features) • [Enterprise / IdC Setup](#-enterprise--idc-setup) • [Configuration](#%EF%B8%8F-configuration) • [💖 Sponsor](#-support-the-project)
 
 </div>
 
@@ -38,47 +38,79 @@ Made with ❤️ by [@Jwadow](https://github.com/jwadow)
 Cloning it gets you everything you need to point Claude Code (and other AI coding tools) at your
 Kiro subscription.
 
-### 🤖 Easiest path: let your AI tool do it
+### 🤖 Easiest path: guided setup
 
-If you have **Kiro IDE** (or any AI coding assistant) open in this repo, just ask it:
+If you have **Kiro IDE** or another AI coding assistant open in this repo, ask:
 
 > *"Set up kiro-gateway and Claude Code for me."*
 
-or run the slash command **`/setup-gateway`**.
+In Claude Code you can also run **`/setup-gateway`**. The setup uses the current
+repository directory automatically; there is no checkout-selection step. Clone
+or open the repo, run the skill, and it keeps setup, gateway startup, and
+verification in that same directory.
 
-The repo ships an always-on setup runbook ([`.kiro/steering/setup.md`](.kiro/steering/setup.md),
-referenced from [`CLAUDE.md`](CLAUDE.md) and [`AGENTS.md`](AGENTS.md)) that walks any agent through
-the whole flow: checking/installing Claude Code, running the installer, starting the gateway,
-verifying it end to end, and offering to install the `kiro-credits` skill globally. Kiro loads it
-automatically; Claude Code, Cursor, and Codex pick it up from `CLAUDE.md` / `AGENTS.md`.
-
-### 🛠️ Manual path
-
-**AWS IAM Identity Center users can bootstrap the gateway without Kiro IDE or Kiro CLI.**
-Configure an AWS shared-config profile with `sso_start_url` and `sso_region` (directly or through
-`sso_session`), then run:
+When safe event streaming is available, the agent runs one long-lived process:
 
 ```bash
-git clone https://github.com/polarity-dev/kiro-gateway.git
-cd kiro-gateway
-./setup.sh --aws-profile company
+./setup.sh -y --aws-profile company --agent-events
+```
+
+Its stdout contains only allowlisted `KIRO_EVENT` JSONL records, so the agent can
+relay the code and URL in chat while that same process continues polling. Raw
+setup/debug logs are never streamed. If safe monitoring is unavailable, enter
+`! ./setup.sh -y --aws-profile company` directly at the Claude Code prompt. In a
+normal terminal, use the same command without `!`.
+
+`-y` accepts local installer confirmations only; it does **not** bypass AWS
+approval. Keep the command running. It prints a `Code:` and `URL:` before opening
+the browser and before polling. Compare the browser code with the terminal code
+character-for-character, including case and hyphens, and choose **Confirm and
+continue** only when they match exactly and you initiated the request. If the
+code differs, is missing, or the request is unexpected, cancel it, press Ctrl+C,
+and rerun setup for a fresh code. Never reuse a code from an interrupted,
+denied, or expired attempt.
+
+Add `--no-browser` to open the printed URL manually, `--q-profile NAME_OR_ARN`
+when multiple Q profiles are assigned, or `--port PORT` for a custom first-setup
+port. Wait for setup to exit successfully before starting the gateway:
+
+```bash
 python3 main.py
 ```
 
-Add `-y` to accept setup prompts; browser device approval is still required. With multiple Q
-profiles, add `--q-profile NAME_OR_ARN`. A custom first-setup port can be combined with
-`--port PORT`.
+At startup, an expired access token is refreshed silently. If the direct IdC
+refresh token or client registration is no longer usable, a local foreground
+`python3 main.py` starts one device-authorization flow and then continues only
+after successful approval. It never loops or silently changes Q profiles.
+Docker, CI, direct `uvicorn main:app`, non-TTY services, SQLite/Kiro CLI, and
+multi-account mode never open a browser; renew credentials separately in those
+contexts. Use `python3 main.py --no-interactive-reauth` to disable startup device
+login explicitly. Agents may use `--agent-events` to stream only safe startup
+authentication events.
+
+The full agent contract and troubleshooting flow live in
+[`.kiro/steering/setup.md`](.kiro/steering/setup.md), referenced from
+[`CLAUDE.md`](CLAUDE.md) and [`AGENTS.md`](AGENTS.md).
+
+### 🛠️ Manual path
+
+**AWS IAM Identity Center users can bootstrap the gateway without Kiro IDE or
+Kiro CLI.** Configure an AWS shared-config profile with `sso_start_url` and
+`sso_region` (directly or through `sso_session`), then use the normal-terminal
+command above. Keep it in the foreground and apply the same exact-code check.
 
 ### What setup.sh does
 
-With `--aws-profile`, setup registers a public AWS SSO OIDC client, completes device authorization,
-discovers the assigned Amazon Q Developer profile through bearer-authenticated
-`ListAvailableProfiles`, and writes refreshable owner-only (`0600`) credentials to
-`~/.aws/sso/cache/kiro-gateway-auth.json`. It stores the SSO and Q API regions separately,
-generates `.env`, and atomically synchronizes Claude Code and the selected gateway port.
+With `--aws-profile`, setup registers a public AWS SSO OIDC client, completes
+device authorization, discovers the assigned Amazon Q Developer profile through
+bearer-authenticated `ListAvailableProfiles`, and writes refreshable owner-only
+(`0600`) credentials to `~/.aws/sso/cache/kiro-gateway-auth.json`. It stores the
+SSO and Q API regions separately, generates `.env`, and atomically synchronizes
+Claude Code and the selected gateway port.
 
-Running without `--aws-profile` preserves the legacy Kiro IDE credential/log path. Existing
-credential and `.env` files are never replaced without confirmation; `.env` is backed up first.
+Running without `--aws-profile` preserves the legacy Kiro IDE credential/log
+path. Existing credential and `.env` files are never replaced without
+confirmation; `.env` is backed up first.
 
 ### Requirements
 
@@ -89,14 +121,34 @@ credential and `.env` files are never replaced without confirmation; `.env` is b
 
 ### Troubleshooting
 
-**No Q Developer profiles** — ask the AWS administrator to assign the subscription/profile and
-retry after propagation.
+**Code is not visible while the browser waits** — cancel the request and stop
+the command; never reuse that code. Agents should rerun with `--agent-events`
+through safe event monitoring. Without it, use a visible foreground shell
+(`! ./setup.sh ...` inside Claude Code; no `!` in a normal terminal).
+
+**Repeated `401 Invalid API key` from the local gateway** — setup and the running
+gateway may be using different checkouts, each with its own `.env` proxy key.
+This is a local Claude-to-gateway mismatch, not an expired IAM Identity Center
+token. Stop the gateway, return to the checkout selected at the start, rerun
+setup/alignment there, restart from that same path, and open a new Claude Code
+session. **Do not delete `kiro-gateway-auth.json`** to fix a local 401.
+
+**Browser does not open** — rerun with `--no-browser`, open the printed URL, and
+approve only if its code exactly matches the terminal `Code:`.
+
+**Code differs, was denied, or expired** — cancel/stop the attempt and rerun
+setup for a fresh code.
+
+**No Q Developer profiles** — ask the AWS administrator to assign the
+subscription/profile and retry after propagation.
 
 **Multiple Q Developer profiles** — rerun with `--q-profile NAME_OR_ARN`.
 
-**`runtime.<region>.kiro.dev does not resolve`** — configure `VPN_PROXY_URL` in `.env`.
+**`runtime.<region>.kiro.dev` does not resolve** — configure `VPN_PROXY_URL` in
+`.env`.
 
-**Claude Code opens a browser login page** — rerun setup; it configures
+**Claude Code asks for a Claude account login** — this is different from the
+expected AWS IAM Identity Center approval page. Rerun setup; it configures
 `ANTHROPIC_AUTH_TOKEN`, not `ANTHROPIC_API_KEY`.
 
 ### Shell helper (optional)
@@ -258,7 +310,11 @@ rows, then decoded back to their raw Kiro `modelId` before inference.
 
 ---
 
-## 🚀 Quick Start
+## 🚀 Legacy / Advanced Credential Setup
+
+> **IAM Identity Center users:** prefer the automated [Enterprise / IdC Setup](#-enterprise--idc-setup)
+> above. The methods below reuse credentials managed by Kiro IDE/Kiro CLI or
+> configure credential sources manually; they are retained for compatibility.
 
 **Choose your deployment method:**
 - 🐍 **Native Python** - Full control, easy debugging
@@ -364,8 +420,9 @@ KIRO_CREDS_FILE="~/.aws/sso/cache/your-sso-cache-file.json"
 # Password to protect YOUR proxy server
 PROXY_API_KEY="my-super-secret-password-123"
 
-# Note: PROFILE_ARN is NOT needed for AWS SSO (Builder ID and corporate accounts)
-# The gateway will work without it
+# Enterprise Amazon Q requests require a profile ARN.
+# Direct bootstrap discovers it automatically. For legacy credential sources
+# that omit it, set PROFILE_ARN manually. Builder ID may work without one.
 ```
 
 <details>
@@ -384,7 +441,7 @@ AWS SSO credentials files (from `~/.aws/sso/cache/`) contain:
 }
 ```
 
-**Note:** AWS SSO (Builder ID and corporate accounts) users do NOT need `profileArn`. The gateway will work without it (if specified, it will be ignored).
+**Note:** Direct IAM Identity Center bootstrap discovers and stores `profileArn` automatically. Enterprise Amazon Q requests require it; legacy AWS SSO credential sources that omit it must provide `PROFILE_ARN` separately. Builder ID accounts may work without an Enterprise profile ARN.
 
 </details>
 
@@ -413,8 +470,9 @@ KIRO_CLI_DB_FILE="~/.local/share/kiro-cli/data.sqlite3"
 # Password to protect YOUR proxy server
 PROXY_API_KEY="my-super-secret-password-123"
 
-# Note: PROFILE_ARN is NOT needed for AWS SSO (Builder ID and corporate accounts)
-# The gateway will work without it
+# Enterprise Amazon Q requests require a profile ARN.
+# Direct bootstrap discovers it automatically. For legacy credential sources
+# that omit it, set PROFILE_ARN manually. Builder ID may work without one.
 ```
 
 <details>
@@ -534,7 +592,7 @@ For complete configuration examples (including per-account region settings), see
 
 ## 🐳 Docker Deployment
 
-> **Docker-based deployment.** Prefer native Python? See [Quick Start](#-quick-start) above.
+> **Docker-based deployment.** Prefer native Python? See [Enterprise / IdC Setup](#-enterprise--idc-setup) above.
 
 ### Quick Start
 

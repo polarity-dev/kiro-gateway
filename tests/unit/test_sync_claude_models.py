@@ -47,6 +47,35 @@ async def test_live_catalog_has_priority(sync_module: ModuleType, tmp_path: Path
 
 
 @pytest.mark.asyncio
+async def test_preferred_env_overrides_existing_stale_account_file(
+    sync_module: ModuleType, tmp_path: Path
+) -> None:
+    """Direct setup uses its freshly selected credential despite stale accounts."""
+    accounts = tmp_path / "credentials.json"
+    accounts.write_text('[{"type":"json","path":"old.json"}]', encoding="utf-8")
+    with patch.object(
+        sync_module,
+        "_discover_live_catalog",
+        AsyncMock(return_value=["fresh-model"]),
+    ) as live, patch.object(
+        sync_module,
+        "_discover_account_catalog",
+        AsyncMock(side_effect=AssertionError("stale accounts must not win")),
+    ):
+        resolved = await sync_module.resolve_catalog(
+            {},
+            tmp_path / "state.json",
+            tmp_path / ".env",
+            accounts,
+            prefer_env=True,
+        )
+
+    live.assert_awaited_once()
+    assert resolved.model_ids == ["fresh-model"]
+    assert resolved.source == "live selected credential discovery"
+
+
+@pytest.mark.asyncio
 async def test_state_lkg_is_used_when_live_discovery_fails(
     sync_module: ModuleType, tmp_path: Path
 ) -> None:

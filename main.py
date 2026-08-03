@@ -77,7 +77,17 @@ from kiro.config import (
     ACCOUNTS_STATE_FILE,
     _warn_timeout_configuration,
 )
-from kiro.auth import KiroAuthManager
+from kiro.auth import (
+    KiroAuthManager,
+    RefreshFailureKind,
+    TokenRefreshError,
+)
+from kiro.idc_login import (
+    IdcLoginEvent,
+    build_event_sink as build_idc_event_sink,
+    emit_agent_event,
+    reauthenticate_direct_credentials,
+)
 from kiro.cache import ModelInfoCache
 from kiro.model_resolver import ModelResolver
 from kiro.account_manager import AccountManager
@@ -588,6 +598,90 @@ UVICORN_LOG_CONFIG = {
 }
 
 
+def _is_ci_or_container() -> bool:
+    """Return whether interactive browser auth must stay disabled."""
+    ci_markers = (
+        "CI",
+        "GITHUB_ACTIONS",
+        "GITLAB_CI",
+        "BUILD_ID",
+        "JENKINS_URL",
+        "TEAMCITY_VERSION",
+    )
+    if any(os.getenv(name) for name in ci_markers):
+        return True
+    if os.getenv("container") or os.getenv("KUBERNETES_SERVICE_HOST"):
+        return True
+    return Path("/.dockerenv").exists()
+
+
+def _interactive_reauth_allowed(args: argparse.Namespace, auth: KiroAuthManager) -> bool:
+    """Apply fail-closed guards for startup device authorization."""
+    if getattr(args, "no_interactive_reauth", False):
+        return False
+    if ACCOUNT_SYSTEM or _is_ci_or_container():
+        return False
+    if not auth._is_direct_idc or auth._sqlite_db or not KIRO_CREDS_FILE:
+        return False
+    if getattr(args, "agent_events", False):
+        return True
+    visible_terminal = sys.stdin.isatty() and sys.stdout.isatty()
+    return visible_terminal
+
+
+def _reauth_guidance() -> str:
+    """Return an actionable non-interactive recovery command."""
+    return (
+        "IAM Identity Center reauthentication is required, but interactive startup "
+        "is unavailable. Run ./setup.sh -y --aws-profile NAME in a visible terminal."
+    )
+
+
+async def preflight_gateway_auth(args: argparse.Namespace) -> None:
+    """Refresh direct credentials and perform one guarded device login if needed."""
+    if not KIRO_CREDS_FILE or KIRO_CLI_DB_FILE or ACCOUNT_SYSTEM:
+        return
+    credential_path = Path(KIRO_CREDS_FILE).expanduser()
+    if not credential_path.is_file():
+        return
+
+    auth = KiroAuthManager(
+        creds_file=str(credential_path),
+        profile_arn=PROFILE_ARN or None,
+        region=REGION,
+        api_region=os.getenv("KIRO_API_REGION") or None,
+    )
+    if not auth._is_direct_idc:
+        return
+    try:
+        await auth.get_access_token()
+        return
+    except TokenRefreshError as exc:
+        if exc.kind is not RefreshFailureKind.REAUTH_REQUIRED:
+            raise RuntimeError(f"Kiro token refresh failed: {exc}") from exc
+        if not _interactive_reauth_allowed(args, auth):
+            raise RuntimeError(_reauth_guidance()) from exc
+
+    agent_events = getattr(args, "agent_events", False)
+    sink = build_idc_event_sink(
+        agent_events=agent_events,
+        no_browser=getattr(args, "no_browser", False),
+        scope="startup",
+    )
+    await reauthenticate_direct_credentials(credential_path, event_sink=sink)
+
+    # Reconstruct from disk so startup never continues with stale in-memory data.
+    verified = KiroAuthManager(
+        creds_file=str(credential_path),
+        profile_arn=PROFILE_ARN or None,
+        region=REGION,
+        api_region=os.getenv("KIRO_API_REGION") or None,
+    )
+    await verified.get_access_token()
+    if agent_events:
+        emit_agent_event(IdcLoginEvent("succeeded"), scope="startup")
+
+
 def parse_cli_args() -> argparse.Namespace:
     """
     Parse command-line arguments for server configuration.
@@ -634,12 +728,33 @@ Examples:
         help=f"Server port (default: {DEFAULT_SERVER_PORT}, env: SERVER_PORT)"
     )
     
+    reauth = parser.add_mutually_exclusive_group()
+    reauth.add_argument(
+        "--interactive-reauth",
+        action="store_true",
+        help="Allow one local IAM Identity Center device login when refresh is unrecoverable",
+    )
+    reauth.add_argument(
+        "--no-interactive-reauth",
+        action="store_true",
+        help="Never open an IAM Identity Center device login during gateway startup",
+    )
+    parser.add_argument(
+        "--agent-events",
+        action="store_true",
+        help="Emit allowlisted startup authentication events as KIRO_EVENT JSONL",
+    )
+    parser.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="Print the startup authorization URL without opening a browser",
+    )
     parser.add_argument(
         "-v", "--version",
         action="version",
         version=f"%(prog)s {APP_VERSION}"
     )
-    
+
     return parser.parse_args()
 
 
@@ -734,15 +849,35 @@ if __name__ == "__main__":
     # Run configuration validation before starting server
     validate_configuration()
     
+    try:
+        asyncio.run(preflight_gateway_auth(args))
+    except KeyboardInterrupt:
+        if args.agent_events:
+            emit_agent_event(
+                IdcLoginEvent("cancelled", category="cancelled"),
+                scope="startup",
+            )
+        raise SystemExit(130)
+    except Exception as exc:
+        if args.agent_events:
+            emit_agent_event(
+                IdcLoginEvent("failed", category="authentication"),
+                scope="startup",
+            )
+        else:
+            logger.error(f"Gateway authentication preflight failed: {exc}")
+        raise SystemExit(1)
+
     # Warn about suboptimal timeout configuration
     _warn_timeout_configuration()
-    
+
     # Resolve final configuration with priority hierarchy
     final_host, final_port = resolve_server_config(args)
-    
-    # Print startup banner
-    print_startup_banner(final_host, final_port)
-    
+
+    # Keep stdout machine-readable when an agent is streaming auth events.
+    if not args.agent_events:
+        print_startup_banner(final_host, final_port)
+
     logger.info(f"Starting Uvicorn server on {final_host}:{final_port}...")
     
     # Use string reference to avoid double module import

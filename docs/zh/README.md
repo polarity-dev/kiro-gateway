@@ -21,6 +21,8 @@
 
 ---
 
+> **IAM Identity Center setup:** this translation still documents the legacy credential flow. Follow the current [English Enterprise / IdC setup](../../README.md#-enterprise--idc-setup) for the authoritative foreground login and exact code-matching procedure.
+
 ## 🤖 可用模型
 
 模型可用性会针对已认证的 Kiro 订阅和区域动态发现；本仓库不维护权威静态列表。请通过已认证的 `GET /v1/models` 查看当前目录。运行 `python3 scripts/sync_claude_models.py sync` 可更新 Claude Code 的筛选模型选择器。

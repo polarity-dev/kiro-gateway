@@ -99,6 +99,8 @@ async def resolve_catalog(
     state_path: Path,
     env_file: Path,
     accounts_path: Path,
+    *,
+    prefer_env: bool = False,
 ) -> ResolvedCatalog:
     """Resolve models from live Kiro, gateway state, or Claude LKG settings.
 
@@ -115,11 +117,33 @@ async def resolve_catalog(
         ClaudeSettingsError: If every source is unavailable or invalid.
     """
     failures: list[str] = []
+    if prefer_env or not accounts_path.exists():
+        try:
+            live_ids = await _discover_live_catalog(env_file)
+            source = (
+                "live selected credential discovery"
+                if prefer_env
+                else "live Kiro discovery"
+            )
+            return ResolvedCatalog(live_ids, source)
+        except (
+            AuthConfigurationError,
+            ModelDiscoveryError,
+            OSError,
+            ValueError,
+            httpx.HTTPError,
+        ) as exc:
+            failures.append(f"live discovery: {exc}")
+
     if accounts_path.exists():
         try:
             account_ids = await _discover_account_catalog(accounts_path, state_path)
             if account_ids:
-                return ResolvedCatalog(account_ids, "complete account-system catalog")
+                return ResolvedCatalog(
+                    account_ids,
+                    "complete account-system catalog",
+                    warning="; ".join(failures) or None,
+                )
             failures.append(
                 "account system: at least one configured account has no live or "
                 "last-known-good catalog"
@@ -131,30 +155,18 @@ async def resolve_catalog(
             httpx.HTTPError,
         ) as exc:
             failures.append(f"account system: {exc}")
-    else:
-        try:
-            live_ids = await _discover_live_catalog(env_file)
-            return ResolvedCatalog(live_ids, "live Kiro discovery")
-        except (
-            AuthConfigurationError,
-            ModelDiscoveryError,
-            OSError,
-            ValueError,
-            httpx.HTTPError,
-        ) as exc:
-            failures.append(f"live discovery: {exc}")
 
-        try:
-            state_catalog = load_state_model_catalog(state_path)
-            if state_catalog:
-                return ResolvedCatalog(
-                    build_catalog_display_ids(state_catalog),
-                    "gateway state last-known-good",
-                    warning=failures[0],
-                )
-            failures.append("gateway state: no saved model catalog")
-        except ModelDiscoveryError as exc:
-            failures.append(f"gateway state: {exc}")
+    try:
+        state_catalog = load_state_model_catalog(state_path)
+        if state_catalog:
+            return ResolvedCatalog(
+                build_catalog_display_ids(state_catalog),
+                "gateway state last-known-good",
+                warning="; ".join(failures),
+            )
+        failures.append("gateway state: no saved model catalog")
+    except ModelDiscoveryError as exc:
+        failures.append(f"gateway state: {exc}")
 
     existing = validate_available_models(settings.get("availableModels"))
     if existing:
@@ -180,6 +192,7 @@ async def synchronize_models(args: argparse.Namespace) -> int:
         Path(args.state).expanduser(),
         Path(args.env_file).expanduser(),
         Path(args.accounts).expanduser(),
+        prefer_env=args.prefer_env,
     )
 
     updated = settings
@@ -241,6 +254,11 @@ def build_parser() -> argparse.ArgumentParser:
     sync.add_argument("--state", default=str(_REPO_ROOT / "state.json"))
     sync.add_argument("--accounts", default=str(_REPO_ROOT / "credentials.json"))
     sync.add_argument("--env-file", default=str(_REPO_ROOT / ".env"))
+    sync.add_argument(
+        "--prefer-env",
+        action="store_true",
+        help="Prefer the credential selected by --env-file over an existing account file",
+    )
     sync.add_argument("--base-url")
     sync.add_argument(
         "--auth-token-env",

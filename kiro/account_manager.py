@@ -318,8 +318,15 @@ class AccountManager:
         try:
             with open(state_path, 'r', encoding='utf-8') as f:
                 state_data = json.load(f)
-            # Restore global current_account_index
-            self._current_account_index = state_data.get("current_account_index", 0)
+            # Prefer a stable account ID; retain the legacy list index fallback.
+            preferred_id = state_data.get("current_account_id")
+            account_ids = list(self._accounts)
+            if isinstance(preferred_id, str) and preferred_id in self._accounts:
+                self._current_account_index = account_ids.index(preferred_id)
+            else:
+                self._current_account_index = state_data.get("current_account_index", 0)
+                if account_ids:
+                    self._current_account_index %= len(account_ids)
             
             # Restore model_to_accounts mapping (without next_index)
             for model, data in state_data.get("model_to_accounts", {}).items():
@@ -357,8 +364,15 @@ class AccountManager:
         
         Uses tmp file + rename for atomic write.
         """
+        account_ids = list(self._accounts)
+        preferred_id = (
+            account_ids[self._current_account_index % len(account_ids)]
+            if account_ids
+            else None
+        )
         state_data = {
             "current_account_index": self._current_account_index,
+            "current_account_id": preferred_id,
             "accounts": {
                 account_id: {
                     "failures": account.failures,

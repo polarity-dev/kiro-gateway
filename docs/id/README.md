@@ -21,6 +21,8 @@ Dibuat dengan ❤️ oleh [@Jwadow](https://github.com/jwadow)
 
 ---
 
+> **IAM Identity Center setup:** this translation still documents the legacy credential flow. Follow the current [English Enterprise / IdC setup](../../README.md#-enterprise--idc-setup) for the authoritative foreground login and exact code-matching procedure.
+
 ## 🤖 Model yang Tersedia
 
 Ketersediaan model ditemukan secara dinamis dari Kiro untuk langganan dan wilayah yang diautentikasi; repositori tidak menyimpan daftar statis resmi. Periksa katalog saat ini melalui `GET /v1/models` yang diautentikasi. Jalankan `python3 scripts/sync_claude_models.py sync` untuk memperbarui pemilih Claude Code yang difilter.

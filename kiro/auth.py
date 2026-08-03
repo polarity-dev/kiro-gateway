@@ -66,6 +66,55 @@ SQLITE_REGISTRATION_KEYS = [
 ]
 
 
+class RefreshFailureKind(Enum):
+    """Stable categories for token refresh failures."""
+
+    REAUTH_REQUIRED = "reauth_required"
+    TRANSIENT = "transient"
+    CONFIGURATION = "configuration"
+    UNKNOWN = "unknown"
+
+
+class TokenRefreshError(RuntimeError):
+    """Sanitized refresh failure suitable for startup policy decisions."""
+
+    def __init__(
+        self,
+        kind: RefreshFailureKind,
+        message: str,
+        *,
+        status_code: Optional[int] = None,
+        provider_code: Optional[str] = None,
+    ) -> None:
+        super().__init__(message)
+        self.kind = kind
+        self.status_code = status_code
+        self.provider_code = provider_code
+
+
+_REAUTH_ERROR_CODES = {
+    "expiredtoken",
+    "expiredtokenexception",
+    "invalidclient",
+    "invalidclientexception",
+    "invalidclientmetadata",
+    "invalidgrant",
+    "invalidgrantexception",
+    "invalidrequest",
+    "invalidrequestexception",
+    "unauthorizedclient",
+    "unauthorizedclientexception",
+}
+
+
+def _normalize_oidc_error_code(value: object) -> str:
+    """Normalize an untrusted provider error code without retaining its body."""
+    if not isinstance(value, str):
+        return "unknown"
+    normalized = re.sub(r"[^a-z0-9]", "", value.lower())
+    return normalized or "unknown"
+
+
 class AuthType(Enum):
     """
     Type of authentication mechanism.
@@ -152,8 +201,12 @@ class KiroAuthManager:
         # AWS SSO OIDC specific fields
         self._client_id: Optional[str] = client_id
         self._client_secret: Optional[str] = client_secret
+        self._client_secret_expires_at: Optional[int] = None
         self._scopes: Optional[list] = None  # OAuth scopes for AWS SSO OIDC
         self._sso_region: Optional[str] = None  # SSO region for OIDC token refresh (may differ from API region)
+        self._start_url: Optional[str] = None
+        self._aws_profile: Optional[str] = None
+        self._is_direct_idc = False
         
         # Enterprise Kiro IDE specific fields
         self._client_id_hash: Optional[str] = None  # clientIdHash from Enterprise Kiro IDE
@@ -445,8 +498,17 @@ class KiroAuthManager:
                 self._client_id = data['clientId']
             if 'clientSecret' in data:
                 self._client_secret = data['clientSecret']
+            if 'clientSecretExpiresAt' in data and isinstance(data['clientSecretExpiresAt'], int):
+                self._client_secret_expires_at = data['clientSecretExpiresAt']
             if 'scopes' in data and isinstance(data['scopes'], list):
                 self._scopes = data['scopes']
+            if isinstance(data.get('startUrl'), str) and data['startUrl']:
+                self._start_url = data['startUrl']
+            if isinstance(data.get('awsProfile'), str) and data['awsProfile']:
+                self._aws_profile = data['awsProfile']
+            self._is_direct_idc = data.get('authMode') == 'direct_idc' or bool(
+                self._start_url and data.get('clientId') and data.get('clientSecret')
+            )
 
             # Parse expiresAt
             if 'expiresAt' in data:
@@ -735,7 +797,7 @@ class KiroAuthManager:
         new_profile_arn = data.get("profileArn")
         
         if not new_access_token:
-            raise ValueError(f"Response does not contain accessToken: {data}")
+            raise ValueError("Token refresh response is missing accessToken")
         
         # Update data
         self._access_token = new_access_token
@@ -793,6 +855,33 @@ class KiroAuthManager:
             else:
                 raise
     
+    def _direct_idc_configuration_error(self, message: str) -> ValueError:
+        """Return a typed reauthentication error only for direct IdC files."""
+        if self._is_direct_idc:
+            return TokenRefreshError(RefreshFailureKind.REAUTH_REQUIRED, message)
+        return ValueError(message)
+
+    def _raise_direct_idc_http_error(self, response: httpx.Response) -> None:
+        """Raise a sanitized typed refresh error for direct IdC credentials."""
+        try:
+            data = response.json()
+        except Exception:
+            data = {}
+        code = _normalize_oidc_error_code(data.get("error") if isinstance(data, dict) else None)
+        status = response.status_code
+        if status == 429 or status >= 500:
+            kind = RefreshFailureKind.TRANSIENT
+        elif code in _REAUTH_ERROR_CODES:
+            kind = RefreshFailureKind.REAUTH_REQUIRED
+        else:
+            kind = RefreshFailureKind.UNKNOWN
+        raise TokenRefreshError(
+            kind,
+            f"AWS SSO OIDC refresh failed ({status}, {code})",
+            status_code=status,
+            provider_code=code,
+        )
+
     async def _do_aws_sso_oidc_refresh(self) -> None:
         """
         Performs the actual AWS SSO OIDC token refresh.
@@ -810,12 +899,26 @@ class KiroAuthManager:
             httpx.HTTPStatusError: On HTTP error (including 400 for invalid token)
         """
         if not self._refresh_token:
-            raise ValueError("Refresh token is not set")
+            raise self._direct_idc_configuration_error("Refresh token is not set")
         if not self._client_id:
-            raise ValueError("Client ID is not set (required for AWS SSO OIDC)")
+            raise self._direct_idc_configuration_error(
+                "Client ID is not set (required for AWS SSO OIDC)"
+            )
         if not self._client_secret:
-            raise ValueError("Client secret is not set (required for AWS SSO OIDC)")
-        
+            raise self._direct_idc_configuration_error(
+                "Client secret is not set (required for AWS SSO OIDC)"
+            )
+        if (
+            self._is_direct_idc
+            and self._client_secret_expires_at is not None
+            and self._client_secret_expires_at <= int(datetime.now(timezone.utc).timestamp())
+        ):
+            raise TokenRefreshError(
+                RefreshFailureKind.REAUTH_REQUIRED,
+                "AWS SSO OIDC client registration expired",
+                provider_code="expiredclientregistration",
+            )
+
         logger.info("Refreshing Kiro token via AWS SSO OIDC...")
         
         # AWS SSO OIDC CreateToken API uses JSON with camelCase parameters
@@ -844,20 +947,20 @@ class KiroAuthManager:
         async with httpx.AsyncClient(timeout=30) as client:
             response = await client.post(url, json=payload, headers=headers)
             
-            # Log response details for debugging (especially on errors)
             if response.status_code != 200:
-                error_body = response.text
-                logger.error(f"AWS SSO OIDC refresh failed: status={response.status_code}, "
-                             f"body={error_body}")
-                # Try to parse AWS error for more details
                 try:
                     error_json = response.json()
-                    error_code = error_json.get("error", "unknown")
-                    error_desc = error_json.get("error_description", "no description")
-                    logger.error(f"AWS SSO OIDC error details: error={error_code}, "
-                                 f"description={error_desc}")
                 except Exception:
-                    pass  # Body wasn't JSON, already logged as text
+                    error_json = {}
+                error_code = _normalize_oidc_error_code(
+                    error_json.get("error") if isinstance(error_json, dict) else None
+                )
+                logger.error(
+                    "AWS SSO OIDC refresh failed: "
+                    f"status={response.status_code}, error={error_code}"
+                )
+                if self._is_direct_idc:
+                    self._raise_direct_idc_http_error(response)
                 response.raise_for_status()
             
             result = response.json()
@@ -868,7 +971,7 @@ class KiroAuthManager:
         expires_in = result.get("expiresIn", 3600)
         
         if not new_access_token:
-            raise ValueError(f"AWS SSO OIDC response does not contain accessToken: {result}")
+            raise ValueError("AWS SSO OIDC response is missing accessToken")
         
         # Update data
         self._access_token = new_access_token

@@ -33,6 +33,22 @@ Work through these steps in order. Run one command at a time, read its output,
 and only continue if it succeeded. Explain what you are doing in plain language
 as you go — the user may not know the internals.
 
+**Use the current repository directory.** When the user asks to set up the
+repo without naming another path, run the entire flow from the agent/session's
+current gateway checkout—do not ask them to choose one. Setup, gateway startup,
+port checks, and troubleshooting must keep using that same working directory.
+Only change directories when the user explicitly names a different checkout.
+For diagnostics, `git rev-parse --show-toplevel` identifies the current checkout.
+A linked worktree has its own ignored `.env`, `credentials.json`, and `state.json`,
+so never switch checkout implicitly during a setup already in progress.
+
+Agents may run the read-only prechecks. For IAM Identity Center authorization,
+prefer the dedicated `--agent-events` stream through `Monitor`: it exposes only
+allowlisted `KIRO_EVENT` JSONL records while the same setup process keeps polling.
+Never run raw setup through an ordinary captured Bash tool and never stream its
+raw logs. If `Monitor` is unavailable, hand the command to the user in a visible
+foreground terminal.
+
 ### Step 0 — Preconditions (check, do not assume)
 
 Verify all of these before touching anything. If one fails, tell the user how to
@@ -73,16 +89,49 @@ auto-updates itself.
 
 ### Step 2 — Run the gateway installer
 
-Ask which AWS CLI profile contains the user's IAM Identity Center settings, then
-run from the repo root:
+Ask which AWS CLI profile contains the user's IAM Identity Center settings.
+When `Monitor` is available, start one monitor over:
 
 ```bash
-./setup.sh -y --aws-profile NAME
+./setup.sh -y --aws-profile NAME --agent-events
 ```
 
-Add `--port 9000` when a custom first-setup port is requested. The `-y` flag
-accepts setup prompts; device authorization still requires browser approval.
-The script:
+Use a session-length/persistent monitor whose stdout is the event stream. Do not
+merge stderr or parse human prose. Relay the `authorization_required` event's
+`code` and `url` to the user, require an exact browser-code match, and leave the
+same monitor running until `setup_succeeded`, `setup_cancelled`, or
+`setup_failed`. The installer suppresses optional SwiftBar/Homebrew work in this
+mode. Stop/cancelled attempts must be rerun for a fresh code.
+
+If safe event monitoring is unavailable, use the foreground fallback. In Claude
+Code ask the user to enter `! ./setup.sh -y --aws-profile NAME`; in an ordinary
+terminal use the same command without `!`. Never use ordinary captured Bash.
+
+Add `--port 9000` for a custom first-setup port, `--q-profile NAME_OR_ARN` for
+multiple Q profiles, or `--no-browser` for manual URL opening. `-y` accepts only
+local installer confirmations; it never bypasses IAM Identity Center approval.
+
+The command prints a `Code:` and `URL:` block before opening the browser and
+before polling. The user must:
+
+1. Keep the foreground command running and read the terminal's `Code:` value.
+2. Open the printed AWS IAM Identity Center URL (automatically unless
+   `--no-browser` is used).
+3. Compare the browser code with the terminal code character-for-character,
+   including case, digits, and hyphen placement.
+4. Choose **Confirm and continue** only when the codes match exactly and the
+   request is expected. Browser launch alone is not successful authorization.
+5. Return to the terminal and wait for setup to exit successfully.
+
+If the browser code differs, is absent, or the request is unexpected, choose
+**Cancel** or close the page, press Ctrl+C in the terminal, and rerun setup to
+obtain a fresh code. Never approve or reuse a code from an interrupted, denied,
+or expired attempt. Never paste credentials, tokens, passwords, or browser
+session data into chat. The displayed device code and verification URL are the
+only values needed for this human comparison.
+
+After the foreground command exits with status 0, the agent may resume the
+runbook. The script:
 
 - reads `sso_start_url` and `sso_region` from the AWS shared config;
 - registers a public AWS SSO OIDC client and completes device authorization;
@@ -155,6 +204,13 @@ Because the config lives in `~/.claude/settings.json` (not shell exports), the
 user does **not** need to export anything or start the gateway from any
 particular directory. Exports wouldn't reach Claude Code's background agents
 anyway; the settings file does.
+
+Startup first validates direct-IdC authentication. Ordinary access-token expiry
+refreshes silently. Only a typed unrecoverable refresh failure may start one
+device flow, and only for local `python3 main.py` with a visible TTY or safe
+`--agent-events` stream. It is disabled for Docker, CI, services/non-TTY,
+direct Uvicorn, SQLite/Kiro CLI, and account-system mode. Use
+`--no-interactive-reauth` to force non-interactive startup.
 
 ### Step 4 — Verify end to end
 
@@ -317,8 +373,8 @@ cosmetic and changes nothing about how the gateway works.
 
 Tell the user, in plain language:
 
-- **To use Claude Code:** make sure the gateway is running (`python3 main.py` in
-  this repo), then run `claude` in any terminal. That's it.
+- **To use Claude Code:** run `python3 main.py` from the repo directory where
+  setup was run, then run `claude` in any terminal. That's it.
 - **Optional shell helper.** Offer to add this to their `~/.zshrc` so they can
   start the gateway from anywhere by typing `kiro-gateway`:
 
@@ -340,9 +396,14 @@ Tell the user, in plain language:
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | AWS profile not found or missing SSO settings | Wrong profile name or incomplete `~/.aws/config` | Fix the profile and rerun with `--aws-profile NAME` |
+| Device code is hidden while the browser waits | Setup was launched through captured/background output | Cancel the browser request and command; never approve or reuse that code. Rerun in a visible foreground shell (`! ./setup.sh ...` in Claude Code) |
+| Browser code differs or is missing | Wrong, stale, or unexpected authorization request | Cancel/close it, stop setup, and rerun for a fresh code; approve only an exact match |
+| Browser does not open | Browser launcher unavailable or `--no-browser` was used | Open the printed URL manually and compare its code exactly with terminal `Code:` |
+| Authorization denied, cancelled, or expired | The attempt did not complete | Rerun setup for a fresh code; interrupted codes must not be reused |
 | No Q Developer profiles | Subscription/profile not assigned or propagated | Ask the AWS administrator to assign it, then retry |
 | Multiple Q Developer profiles | More than one profile is assigned | Rerun with `--q-profile NAME_OR_ARN` |
-| Claude Code opens a browser login page | `ANTHROPIC_API_KEY` set instead of `ANTHROPIC_AUTH_TOKEN` | Re-run `./setup.sh -y --aws-profile NAME`; it sets the correct one |
+| Claude Code asks for a Claude account login | `ANTHROPIC_API_KEY` set instead of `ANTHROPIC_AUTH_TOKEN`; this is not the expected AWS approval page | Re-run setup from the current repo directory; it sets the correct key |
+| Repeated local gateway `401 Invalid API key` | Setup and the running gateway may come from different repo directories with different `.env` proxy keys | Stop the gateway; do not delete IdC credentials. Return to the repo directory where setup was run, realign/re-run setup there, restart there, then open a new Claude Code session |
 | `runtime.<region>.kiro.dev does not resolve` | Network blocking the endpoint | Set `VPN_PROXY_URL` in `.env` (see README → VPN/Proxy Support) |
 | `403 User is not authorized` | Calling Kiro API directly, not through gateway | Point the client at the `SERVER_PORT` shown by `./setup.sh --check-port`, not at Kiro |
 | Configured port already in use | Another process owns the port | Run `./setup.sh --port <free-port>`, then follow the restart checklist above |
@@ -355,5 +416,7 @@ Tell the user, in plain language:
   are tracked by git, into commit messages, or into chat.
 - **Do not hand-edit discovered values.** `profileArn` and `KIRO_API_REGION`
   come from `setup.sh`. If it can't find them, fix the precondition, don't guess.
-- **Prefer `./setup.sh -y --aws-profile NAME` over manual steps.** It is the
-  single source of truth and is safe to re-run (it backs up `.env` to `.env.bak`).
+- **Never hide the device-approval output.** Hand the command to the user in a
+  visible foreground shell and require an exact terminal/browser code match.
+- **Prefer direct IAM Identity Center setup over manual steps.** It is safe to
+  rerun for a fresh code and backs up `.env` to `.env.bak`.

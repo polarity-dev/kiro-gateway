@@ -8,7 +8,7 @@ Tests for parse_cli_args(), resolve_server_config(), and print_startup_banner().
 import pytest
 import argparse
 import sys
-from unittest.mock import patch, MagicMock
+from unittest.mock import AsyncMock, patch, MagicMock
 from io import StringIO
 
 
@@ -130,6 +130,124 @@ class TestParseCliArgs:
         print(f"args.port: {args.port}")
         assert args.host == "127.0.0.1"
         assert args.port == 5000
+
+
+class TestGatewayAuthPreflight:
+    """Startup auth refreshes silently and reauthenticates only when eligible."""
+
+    @pytest.mark.asyncio
+    async def test_valid_or_refreshable_token_never_starts_device_login(
+        self, tmp_path, monkeypatch
+    ):
+        from main import preflight_gateway_auth
+
+        credential = tmp_path / "direct.json"
+        credential.write_text("{}", encoding="utf-8")
+        auth = MagicMock(_is_direct_idc=True, _sqlite_db=None)
+        auth.get_access_token = AsyncMock(return_value="access")
+        args = argparse.Namespace(
+            no_interactive_reauth=False, interactive_reauth=False,
+            agent_events=False, no_browser=False,
+        )
+        monkeypatch.setattr("main.KIRO_CREDS_FILE", str(credential))
+        monkeypatch.setattr("main.KIRO_CLI_DB_FILE", "")
+        monkeypatch.setattr("main.ACCOUNT_SYSTEM", False)
+        monkeypatch.setattr("main.KiroAuthManager", MagicMock(return_value=auth))
+        reauth = AsyncMock()
+        monkeypatch.setattr("main.reauthenticate_direct_credentials", reauth)
+
+        await preflight_gateway_auth(args)
+
+        auth.get_access_token.assert_awaited_once()
+        reauth.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_reauth_required_runs_once_then_verifies(self, tmp_path, monkeypatch):
+        from kiro.auth import RefreshFailureKind, TokenRefreshError
+        from main import preflight_gateway_auth
+
+        credential = tmp_path / "direct.json"
+        credential.write_text("{}", encoding="utf-8")
+        stale = MagicMock(_is_direct_idc=True, _sqlite_db=None)
+        stale.get_access_token = AsyncMock(
+            side_effect=TokenRefreshError(
+                RefreshFailureKind.REAUTH_REQUIRED, "invalid grant"
+            )
+        )
+        fresh = MagicMock(_is_direct_idc=True, _sqlite_db=None)
+        fresh.get_access_token = AsyncMock(return_value="new-access")
+        args = argparse.Namespace(
+            no_interactive_reauth=False, interactive_reauth=False,
+            agent_events=False, no_browser=True,
+        )
+        monkeypatch.setattr("main.KIRO_CREDS_FILE", str(credential))
+        monkeypatch.setattr("main.KIRO_CLI_DB_FILE", "")
+        monkeypatch.setattr("main.ACCOUNT_SYSTEM", False)
+        monkeypatch.setattr("main.KiroAuthManager", MagicMock(side_effect=[stale, fresh]))
+        monkeypatch.setattr("main._interactive_reauth_allowed", lambda args, auth: True)
+        reauth = AsyncMock()
+        monkeypatch.setattr("main.reauthenticate_direct_credentials", reauth)
+
+        await preflight_gateway_auth(args)
+
+        reauth.assert_awaited_once()
+        fresh.get_access_token.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_noninteractive_reauth_fails_without_device_flow(
+        self, tmp_path, monkeypatch
+    ):
+        from kiro.auth import RefreshFailureKind, TokenRefreshError
+        from main import preflight_gateway_auth
+
+        credential = tmp_path / "direct.json"
+        credential.write_text("{}", encoding="utf-8")
+        auth = MagicMock(_is_direct_idc=True, _sqlite_db=None)
+        auth.get_access_token = AsyncMock(
+            side_effect=TokenRefreshError(
+                RefreshFailureKind.REAUTH_REQUIRED, "invalid grant"
+            )
+        )
+        args = argparse.Namespace(
+            no_interactive_reauth=True, interactive_reauth=False,
+            agent_events=False, no_browser=False,
+        )
+        monkeypatch.setattr("main.KIRO_CREDS_FILE", str(credential))
+        monkeypatch.setattr("main.KIRO_CLI_DB_FILE", "")
+        monkeypatch.setattr("main.ACCOUNT_SYSTEM", False)
+        monkeypatch.setattr("main.KiroAuthManager", MagicMock(return_value=auth))
+        reauth = AsyncMock()
+        monkeypatch.setattr("main.reauthenticate_direct_credentials", reauth)
+
+        with pytest.raises(RuntimeError, match="reauthentication is required"):
+            await preflight_gateway_auth(args)
+
+        reauth.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        "account_system,ci_or_container,direct,agent_events,expected",
+        [
+            (True, False, True, False, False),
+            (False, True, True, False, False),
+            (False, False, False, False, False),
+            (False, False, True, True, True),
+        ],
+    )
+    def test_interactive_guard_is_fail_closed(
+        self, monkeypatch, account_system, ci_or_container, direct,
+        agent_events, expected
+    ):
+        from main import _interactive_reauth_allowed
+
+        monkeypatch.setattr("main.ACCOUNT_SYSTEM", account_system)
+        monkeypatch.setattr("main.KIRO_CREDS_FILE", "/credential.json")
+        monkeypatch.setattr("main._is_ci_or_container", lambda: ci_or_container)
+        auth = MagicMock(_is_direct_idc=direct, _sqlite_db=None)
+        args = argparse.Namespace(
+            no_interactive_reauth=False, agent_events=agent_events
+        )
+
+        assert _interactive_reauth_allowed(args, auth) is expected
 
 
 class TestResolveServerConfig:

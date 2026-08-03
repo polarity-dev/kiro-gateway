@@ -175,6 +175,56 @@ class TestSsoOidcDeviceClient:
         assert json.loads(requests[1].content)["startUrl"] == "https://example.awsapps.com/start"
 
     @pytest.mark.asyncio
+    async def test_device_authorization_preserves_code_with_base_uri_fallback(self) -> None:
+        """AWS may omit the complete URI; the separate code remains exact."""
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "deviceCode": "device-code",
+                    "userCode": "aBcD-12Xy",
+                    "verificationUri": "https://device.sso.example/",
+                    "expiresIn": 600,
+                    "interval": 5,
+                },
+            )
+
+        async with _async_client(handler) as client:
+            authorization = await SsoOidcDeviceClient(
+                "us-east-1", client
+            ).start_device_authorization(
+                OidcRegistration("client", "secret", None),
+                "https://example.awsapps.com/start",
+            )
+
+        assert authorization.user_code == "aBcD-12Xy"
+        assert authorization.verification_uri == "https://device.sso.example/"
+        assert authorization.verification_uri_complete == "https://device.sso.example/"
+
+    @pytest.mark.asyncio
+    async def test_device_authorization_rejects_missing_user_code(self) -> None:
+        """Approval cannot proceed safely without a visible comparison code."""
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "deviceCode": "device-code",
+                    "verificationUri": "https://device.sso.example/",
+                    "expiresIn": 600,
+                    "interval": 5,
+                },
+            )
+
+        async with _async_client(handler) as client:
+            with pytest.raises(DeviceAuthorizationError, match="missing userCode"):
+                await SsoOidcDeviceClient(
+                    "us-east-1", client
+                ).start_device_authorization(
+                    OidcRegistration("client", "secret", None),
+                    "https://example.awsapps.com/start",
+                )
+
+    @pytest.mark.asyncio
     async def test_registration_rejects_non_object_json_response(self) -> None:
         """A successful HTTP response with the wrong JSON shape fails cleanly."""
         def handler(request: httpx.Request) -> httpx.Response:

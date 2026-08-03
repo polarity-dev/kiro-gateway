@@ -16,7 +16,8 @@ def test_setup_resolves_and_persists_one_shared_port() -> None:
     assert 'manage_gateway_port.py" "${PORT_ARGS[@]}" ready' in script
     assert 'manage_gateway_port.py" "${PORT_ARGS[@]}" set "$PORT"' in script
     assert 'manage_gateway_port.py" "${PORT_ARGS[@]}" check' in script
-    assert 'SERVER_PORT="$PORT"' in script
+    assert 'reconcile_setup_config.py"' in script
+    assert '--port "$PORT"' in script
     assert "--port PORT" in script
     assert "--check-port" in script
 
@@ -89,13 +90,28 @@ def test_setup_supports_direct_identity_center_login() -> None:
     assert "--q-profile" in script
     assert 'scripts/kiro_login.py" "${LOGIN_ARGS[@]}"' in script
     assert 'CREDS_FILE="$DIRECT_CREDS_FILE"' in script
-    assert 'KIRO_CREDS_FILE="$CREDS_FILE"' in script
+    assert '--credential "$CREDS_FILE"' in script
+    assert "--prefer-env" in script
     assert "ListAvailableProfiles" in script
     assert "LOGIN_ARGS_FORCE=1" in script
     assert 'LOGIN_ARGS+=(--force)' in script
     assert "LOGIN_FORCE_ARGS" not in script
     assert script.index('.env already exists. Overwrite?') < script.index('scripts/kiro_login.py')
     assert '--q-profile requires --aws-profile' in script
+    assert '--no-browser requires --aws-profile' in script
+    assert '--agent-events requires --aws-profile' in script
+    assert 'exec 3>&1' in script
+    assert 'exec 1>&2' in script
+    assert '"${LOGIN_ARGS[@]}" >&3' in script
+    assert '"setup_succeeded"' in script
+    assert '"setup_cancelled"' in script
+    assert '"setup_failed"' in script
+    assert '[ "$NO_BROWSER" -eq 0 ] || LOGIN_ARGS+=(--no-browser)' in script
+    assert "visible foreground terminal" in script
+    assert "matches the printed Code: value exactly" in script
+    assert 'if python3 "$REPO_DIR/scripts/kiro_login.py" "${LOGIN_ARGS[@]}"; then' in script
+    assert 'if [ "$login_status" -eq 130 ]; then' in script
+    assert "exit 130" in script
     assert '[[ "$2" != -* ]]' in script
 
 

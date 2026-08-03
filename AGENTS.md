@@ -6,9 +6,11 @@ This document provides essential information for AI agents (Claude, GPT, etc.) w
 > *contributing to* the gateway code. For *installing and configuring* the
 > gateway + Claude Code on a user's machine, follow the setup runbook instead:
 > **[`.kiro/steering/setup.md`](.kiro/steering/setup.md)** (single source of
-> truth). The short version: `claude --version` (install with
-> `curl -fsSL https://claude.ai/install.sh | bash` if missing) →
-> `./setup.sh -y --aws-profile NAME` → `python3 main.py` → verify.
+> truth). Unless the user explicitly names another path, use the current gateway
+> checkout automatically and do not ask them to choose one. Keep setup, gateway
+> startup, and verification in that same working directory. Prefer `Monitor` over
+> `./setup.sh -y --aws-profile NAME --agent-events`; if unavailable, hand
+> `! ./setup.sh -y --aws-profile NAME` to the user. Require an exact code match.
 
 ## Project Philosophy
 

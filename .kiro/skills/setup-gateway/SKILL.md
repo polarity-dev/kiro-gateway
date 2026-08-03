@@ -16,21 +16,35 @@ improvise a different flow.
 
 ## Flow (summary — full detail in the runbook)
 
-0. **Preconditions.** macOS/Linux, Python 3.10+, an AWS shared-config profile
-   containing IAM Identity Center `sso_start_url` and `sso_region`, and an
-   assigned Amazon Q Developer subscription/profile.
+0. **Use the current repo and check preconditions.** Unless the user explicitly
+   names another path, run setup, startup, and verification in the current
+   gateway checkout; do not ask them to choose a checkout. Then verify
+   macOS/Linux, Python 3.10+, an AWS shared-config profile containing IAM Identity
+   Center `sso_start_url` and `sso_region`, and an assigned Amazon Q Developer
+   subscription/profile.
 1. **Claude Code.** `claude --version`; if missing,
    `curl -fsSL https://claude.ai/install.sh | bash`, then re-check.
-2. **Gateway installer.** Ask for the AWS profile name, then run
-   `./setup.sh -y --aws-profile NAME` (add `--port PORT` when requested).
-   Browser device approval remains interactive. Setup writes `.env`, discovers
-   the Q profile and live catalog, and atomically synchronizes
-   `~/.claude/settings.json`. The generated non-empty
-   `availableModels` string list plus `enforceAvailableModels: true` hides Claude
-   Code's built-in rows.
-3. **Start gateway.** `python3 main.py` (foreground; reads `SERVER_PORT` from
-   `.env`, default `4567`).
-4. **Verify.** Run `./setup.sh --check-port`, compare authenticated `/v1/models`
+2. **Gateway installer (safe streamed handoff).** Ask for the AWS profile name.
+   From the current repo directory, prefer `Monitor` over
+   `./setup.sh -y --aws-profile NAME --agent-events`. Stdout is then only
+   allowlisted `KIRO_EVENT` JSONL while the same process keeps polling. Relay
+   `authorization_required.code` and `.url`, require an exact browser match, and
+   wait for the terminal setup event. Never monitor raw logs or use ordinary
+   captured Bash. If `Monitor` is unavailable, ask the user to enter
+   `! ./setup.sh -y --aws-profile NAME` in Claude Code (without `!` in a normal
+   terminal). Add `--port PORT`, `--q-profile NAME_OR_ARN`, or `--no-browser`
+   when applicable. On mismatch, interruption, denial, or expiry,
+   cancel and rerun for a fresh code; never reuse the old one. Setup writes
+   `.env`, discovers the Q profile and live catalog, and atomically synchronizes
+   `~/.claude/settings.json`. The generated non-empty `availableModels` string
+   list plus `enforceAvailableModels: true` hides Claude Code's built-in rows.
+3. **Start gateway.** Run `python3 main.py` from the current repo directory
+   (foreground; reads `SERVER_PORT` from its `.env`, default `4567`). Normal access-token expiry refreshes silently. Only
+   an unrecoverable direct-IdC refresh starts one local device login; Docker,
+   CI, services, direct Uvicorn, SQLite, and multi-account mode stay
+   non-interactive. `--no-interactive-reauth` disables this recovery.
+4. **Verify.** Run `./setup.sh --check-port` from the current repo directory,
+   then compare authenticated `/v1/models`
    with `availableModels`, then
    have the user run `claude` in a new terminal and confirm `/model` contains
    only Default plus rows labelled `From gateway`.
@@ -164,5 +178,8 @@ If they decline, leave it — purely cosmetic, changes nothing functionally.
 
 - Never commit secrets. `.env`, `credentials.json`, `state.json` are gitignored.
 - Never hand-edit `profileArn` / `KIRO_API_REGION`; they come from `setup.sh`.
-- Prefer `./setup.sh -y --aws-profile NAME` over manual configuration — it is
-  the single source of truth and is safe to re-run.
+- Never launch IAM Identity Center setup with an agent Bash/background tool that
+  may hide live output. Hand `! ./setup.sh -y --aws-profile NAME` to the Claude
+  Code user and require an exact terminal/browser code match before approval.
+- Prefer direct IAM Identity Center setup over manual configuration; rerun it to
+  obtain a fresh code after any cancellation, mismatch, denial, or expiry.

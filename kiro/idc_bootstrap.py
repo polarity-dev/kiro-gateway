@@ -121,6 +121,8 @@ class BootstrapCredentials:
     scopes: list[str]
     startUrl: str
     clientSecretExpiresAt: Optional[int] = None
+    authMode: str = "direct_idc"
+    awsProfile: Optional[str] = None
 
 
 def _validate_region(region: str, source: str) -> str:
@@ -565,6 +567,8 @@ def build_credentials(
         scopes=list(scopes),
         startUrl=sso_profile.start_url,
         clientSecretExpiresAt=registration.client_secret_expires_at,
+        authMode="direct_idc",
+        awsProfile=sso_profile.name,
     )
 
 
