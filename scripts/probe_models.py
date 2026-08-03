@@ -19,15 +19,12 @@ outcome:
     RATE_LIMITED  status 429 (model exists, quota exhausted)
     ERROR         other status, transport error, or timeout
 
-If ListAvailableModels is unreachable, it falls back to a static candidate list.
+If ListAvailableModels is unreachable, discovery mode exits without probing.
 
 Usage (from the repo root):
     python scripts/probe_models.py                    # discover + probe
-    python scripts/probe_models.py --no-discover      # skip discovery, use static list
-    python scripts/probe_models.py --model foo-bar    # probe extra model (merged with discovery)
+    python scripts/probe_models.py --model foo-bar    # probe only explicit IDs
     python scripts/probe_models.py --json > out.json  # machine-readable output
-    python scripts/probe_models.py --diff             # print a proposed
-                                                      # FALLBACK_MODELS diff
 
 Auth is loaded via KiroAuthManager, so the same .env / credentials.json /
 kiro-cli SQLite that runs the gateway also runs this script.
@@ -54,7 +51,6 @@ from dotenv import load_dotenv  # noqa: E402
 
 from kiro.auth import KiroAuthManager  # noqa: E402
 from kiro.config import (  # noqa: E402
-    FALLBACK_MODELS,
     KIRO_CREDS_FILE,
     KIRO_CLI_DB_FILE,
     REFRESH_TOKEN,
@@ -66,13 +62,6 @@ from kiro.model_discovery import (  # noqa: E402
     fetch_available_models,
 )
 from kiro.utils import get_kiro_headers  # noqa: E402
-
-
-# Always audit every configured fallback model. This preserves the probe's
-# ability to detect retired models even when discovery no longer returns them.
-_STATIC_CANDIDATES: List[str] = sorted(
-    {model["modelId"] for model in FALLBACK_MODELS}
-)
 
 
 async def _discover_candidates(auth: KiroAuthManager) -> Optional[List[str]]:
@@ -160,7 +149,7 @@ def _classify_error(status_code: int, body: str) -> str:
     Kiro does not have a single canonical "unknown model" error code, so we
     look for known substrings in the body. When in doubt we default to ERROR
     rather than UNKNOWN, because a wrong classification here would mean
-    deleting a valid model from FALLBACK_MODELS.
+    incorrectly declaring a valid discovered model unavailable.
     """
     body_lower = body.lower()
     if status_code == 429:
@@ -288,59 +277,6 @@ def _print_report(results: List[ProbeResult], api_host: str) -> None:
         print()
 
 
-def _print_diff(results: List[ProbeResult]) -> None:
-    """
-    Print a proposed FALLBACK_MODELS diff against kiro/config.py.
-
-    A model is proposed for KEEP/ADD when it returned WORKS or RATE_LIMITED
-    (both indicate the model is recognized — quota exhaustion is not our
-    concern here). UNKNOWN triggers a REMOVE proposal. ERROR is left alone
-    with a warning, since we cannot tell whether the model exists or not.
-    """
-    current_ids = {m["modelId"] for m in FALLBACK_MODELS}
-    accepted: set[str] = set()
-    unknown: set[str] = set()
-    ambiguous: set[str] = set()
-
-    for r in results:
-        if r.status in (STATUS_WORKS, STATUS_RATE_LIMITED):
-            accepted.add(r.model_id)
-        elif r.status == STATUS_UNKNOWN:
-            unknown.add(r.model_id)
-        else:
-            ambiguous.add(r.model_id)
-
-    to_add = sorted(accepted - current_ids)
-    to_remove = sorted(current_ids & unknown)
-    to_keep = sorted(current_ids & accepted)
-    ambiguous_in_current = sorted(current_ids & ambiguous)
-
-    print("\nProposed FALLBACK_MODELS diff")
-    print("=" * 60)
-
-    if to_add:
-        print("\n+ ADD (probe returned 200 or 429, not in current list):")
-        for m in to_add:
-            print(f"    + {{'modelId': '{m}'}},")
-    if to_remove:
-        print("\n- REMOVE (probe returned model-not-found, in current list):")
-        for m in to_remove:
-            print(f"    - {{'modelId': '{m}'}},")
-    if not to_add and not to_remove:
-        print("\n  (no changes proposed)")
-
-    if to_keep:
-        print(f"\n  KEEP: {len(to_keep)} models unchanged")
-    if ambiguous_in_current:
-        print(
-            f"\n  AMBIGUOUS: {len(ambiguous_in_current)} models in the current "
-            "list returned a non-classifiable error. Not proposing removal — "
-            "re-run probe or inspect manually:"
-        )
-        for m in ambiguous_in_current:
-            print(f"    ? {m}")
-
-
 async def _run(candidates: List[str], concurrency: int, timeout: float, discover: bool) -> tuple[List[ProbeResult], List[str]]:
     """
     Run probes. Returns (results, candidates_used).
@@ -350,15 +286,12 @@ async def _run(candidates: List[str], concurrency: int, timeout: float, discover
     # Warm up the token once so parallel probes don't race on refresh.
     await auth.get_access_token()
 
-    # Normal audits cover both the live catalog and every configured fallback,
-    # so retired fallback models can still be detected. Explicit --model runs
-    # pass discover=False and remain strictly targeted.
     discovered: List[str] = []
     if discover:
         discovered_ids = await _discover_candidates(auth)
         if discovered_ids:
             discovered = discovered_ids
-            candidates = sorted(set(_STATIC_CANDIDATES) | set(discovered))
+            candidates = discovered_ids
 
     limits = httpx.Limits(max_connections=concurrency, max_keepalive_connections=concurrency)
     async with httpx.AsyncClient(limits=limits, http2=False) as client:
@@ -386,7 +319,7 @@ def _select_candidates(
         Candidate model IDs and the discovery flag. Explicit model requests are
         always isolated from catalog discovery.
     """
-    candidates = requested_models or _STATIC_CANDIDATES
+    candidates = requested_models or []
     discover = not no_discover and not requested_models
     return list(candidates), discover
 
@@ -398,11 +331,6 @@ def main() -> int:
         action="append",
         dest="models",
         help="Probe only this model ID (repeatable); skips catalog discovery.",
-    )
-    parser.add_argument(
-        "--no-discover",
-        action="store_true",
-        help="Skip ListAvailableModels discovery, use only --model or static fallback list.",
     )
     parser.add_argument(
         "--concurrency",
@@ -421,19 +349,11 @@ def main() -> int:
         action="store_true",
         help="Emit machine-readable JSON instead of a human report",
     )
-    parser.add_argument(
-        "--diff",
-        action="store_true",
-        help="Print a proposed FALLBACK_MODELS diff after the report",
-    )
     args = parser.parse_args()
 
     # Explicit --model runs are intentionally isolated: probing one candidate
     # must not fan out into live requests for the entire account catalog.
-    base_candidates, discover = _select_candidates(
-        args.models,
-        args.no_discover,
-    )
+    base_candidates, discover = _select_candidates(args.models, False)
 
     results, discovered = asyncio.run(
         _run(base_candidates, args.concurrency, args.timeout, discover)
@@ -458,8 +378,6 @@ def main() -> int:
         if discovered:
             print(f"\n✓ Discovered {len(discovered)} models from ListAvailableModels (q.amazonaws.com)")
         _print_report(results, api_host)
-        if args.diff:
-            _print_diff(results)
 
     # Exit non-zero if any WORKS-candidate probe failed with ERROR — makes it
     # easy to gate CI or a skill on a clean run.
