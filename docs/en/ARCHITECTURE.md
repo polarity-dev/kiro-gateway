@@ -274,6 +274,25 @@ OpenAI messages are transformed into Kiro conversationState:
 4. **Tool calls** — OpenAI tools format support
 5. **Tool results** — correct transmission of tool call results
 
+#### Long Tool Name Aliasing
+
+**Problem:** Kiro rejects tool names longer than 64 characters, while MCP clients commonly generate
+names such as `mcp__<server>__<tool>` that exceed the limit.
+
+**Solution:** `kiro/tool_names.py` builds a deterministic mapping for each request:
+- Names up to 64 characters remain byte-for-byte unchanged.
+- Longer names receive an ASCII alias no longer than 64 characters, derived from a readable stem and
+  a SHA-256 digest.
+- Alias allocation reserves all short names and resolves collisions deterministically.
+- The same mapping is applied to tool definitions and historical tool uses sent to Kiro.
+- OpenAI and Anthropic formatters restore original names before streaming or collecting responses,
+  including bracket-style tool calls and aliases split across stream chunks.
+
+The mapping is immutable and request-scoped. It is carried with `KiroPayloadResult` through retries
+and account failover; it is never stored in application, parser, account, or cache state. Internal
+aliases are not public or persistent identifiers. Tool IDs, arguments, results, descriptions, and
+tokenizer inputs remain client-facing and unchanged.
+
 #### Long Tool Description Handling
 
 **Problem:** Kiro API returns error 400 for too long descriptions in `toolSpecification.description`.

@@ -45,6 +45,12 @@ from kiro.config import (
     AUTO_TRIM_PAYLOAD,
 )
 from kiro.payload_guards import check_payload_size, trim_payload_to_limit
+from kiro.tool_names import (
+    EMPTY_TOOL_NAME_MAPPING,
+    KIRO_TOOL_NAME_MAX_LENGTH,
+    ToolNameMapping,
+    build_tool_name_mapping,
+)
 
 
 # ==================================================================================================
@@ -126,9 +132,13 @@ class KiroPayloadResult:
     Attributes:
         payload: The complete Kiro API payload
         tool_documentation: Documentation for tools with long descriptions (to add to system prompt)
+        tool_name_mapping: Request-scoped aliases used for Kiro tool names
     """
     payload: Dict[str, Any]
     tool_documentation: str = ""
+    tool_name_mapping: ToolNameMapping = field(
+        default_factory=lambda: EMPTY_TOOL_NAME_MAPPING
+    )
 
 
 # ==================================================================================================
@@ -557,49 +567,50 @@ def process_tools_with_long_descriptions(
     return processed_tools if processed_tools else None, tool_documentation
 
 
-def validate_tool_names(tools: Optional[List[UnifiedTool]]) -> None:
-    """
-    Validates tool names against Kiro API 64-character limit.
-    
-    Logs WARNING for each problematic tool and raises ValueError
-    with complete list of violations.
-    
+def validate_tool_names(
+    tools: Optional[List[UnifiedTool]],
+    tool_name_mapping: ToolNameMapping = EMPTY_TOOL_NAME_MAPPING,
+) -> None:
+    """Validate names that are about to be sent to the Kiro API.
+
     Args:
-        tools: List of tools to validate
-    
+        tools: Client-facing tools to validate.
+        tool_name_mapping: Request-scoped aliases applied before emission.
+
     Raises:
-        ValueError: If any tool name exceeds 64 characters
-    
-    Example:
-        >>> validate_tool_names([UnifiedTool(name="short_name", description="test")])
-        # No error
-        >>> validate_tool_names([UnifiedTool(name="a" * 70, description="test")])
-        # Raises ValueError with detailed message
+        ValueError: If an emitted tool name exceeds Kiro's limit.
     """
     if not tools:
         return
-    
-    problematic_tools = []
-    for tool in tools:
-        if len(tool.name) > 64:
-            problematic_tools.append((tool.name, len(tool.name)))
-    
-    if problematic_tools:
-        # Build detailed error message for client (no logging here - routes will log)
-        tool_list = "\n".join([
+
+    invalid_names = [
+        tool_name_mapping.to_kiro(tool.name)
+        for tool in tools
+        if len(tool_name_mapping.to_kiro(tool.name)) > KIRO_TOOL_NAME_MAX_LENGTH
+    ]
+    if invalid_names:
+        problematic_tools = [
+            (tool.name, len(tool.name))
+            for tool in tools
+            if len(tool_name_mapping.to_kiro(tool.name)) > KIRO_TOOL_NAME_MAX_LENGTH
+        ]
+        tool_list = "\n".join(
             f"  - '{name}' ({length} characters)"
             for name, length in problematic_tools
-        ])
-        
+        )
         raise ValueError(
-            f"Tool name(s) exceed Kiro API limit of 64 characters:\n"
+            f"Tool name(s) exceed Kiro API limit of {KIRO_TOOL_NAME_MAX_LENGTH} characters:\n"
             f"{tool_list}\n\n"
-            f"Solution: Use shorter tool names (max 64 characters).\n"
-            f"Example: 'get_user_data' instead of 'get_authenticated_user_profile_data_with_extended_information_about_it'"
+            f"Solution: Use shorter tool names (max {KIRO_TOOL_NAME_MAX_LENGTH} characters).\n"
+            "Example: 'get_user_data' instead of "
+            "'get_authenticated_user_profile_data_with_extended_information_about_it'"
         )
 
 
-def convert_tools_to_kiro_format(tools: Optional[List[UnifiedTool]]) -> List[Dict[str, Any]]:
+def convert_tools_to_kiro_format(
+    tools: Optional[List[UnifiedTool]],
+    tool_name_mapping: ToolNameMapping = EMPTY_TOOL_NAME_MAPPING,
+) -> List[Dict[str, Any]]:
     """
     Converts unified tools to Kiro API format.
     
@@ -625,7 +636,7 @@ def convert_tools_to_kiro_format(tools: Optional[List[UnifiedTool]]) -> List[Dic
         
         kiro_tools.append({
             "toolSpecification": {
-                "name": tool.name,
+                "name": tool_name_mapping.to_kiro(tool.name),
                 "description": description,
                 "inputSchema": {"json": sanitized_params}
             }
@@ -771,7 +782,8 @@ def extract_tool_results_from_content(content: Any) -> List[Dict[str, Any]]:
 
 def extract_tool_uses_from_message(
     content: Any,
-    tool_calls: Optional[List[Dict[str, Any]]] = None
+    tool_calls: Optional[List[Dict[str, Any]]] = None,
+    tool_name_mapping: ToolNameMapping = EMPTY_TOOL_NAME_MAPPING,
 ) -> List[Dict[str, Any]]:
     """
     Extracts tool uses from assistant message.
@@ -783,6 +795,7 @@ def extract_tool_uses_from_message(
     Args:
         content: Message content
         tool_calls: List of tool calls (OpenAI format)
+        tool_name_mapping: Request-scoped aliases for Kiro-facing names
     
     Returns:
         List of tool uses in Kiro format
@@ -801,7 +814,7 @@ def extract_tool_uses_from_message(
                 else:
                     input_data = arguments if arguments else {}
                 tool_uses.append({
-                    "name": func.get("name", ""),
+                    "name": tool_name_mapping.to_kiro(func.get("name", "")),
                     "input": input_data,
                     "toolUseId": tc.get("id", "")
                 })
@@ -811,12 +824,47 @@ def extract_tool_uses_from_message(
         for item in content:
             if isinstance(item, dict) and item.get("type") == "tool_use":
                 tool_uses.append({
-                    "name": item.get("name", ""),
+                    "name": tool_name_mapping.to_kiro(item.get("name", "")),
                     "input": item.get("input", {}),
                     "toolUseId": item.get("id", "")
                 })
     
     return tool_uses
+
+
+def extract_tool_names_from_message(
+    content: Any,
+    tool_calls: Optional[List[Dict[str, Any]]] = None,
+) -> List[str]:
+    """Extract client-facing tool names without parsing tool arguments.
+
+    Args:
+        content: Message content.
+        tool_calls: List of tool calls in unified format.
+
+    Returns:
+        Tool names present in the assistant message.
+    """
+    names: List[str] = []
+
+    if tool_calls:
+        for tool_call in tool_calls:
+            if not isinstance(tool_call, dict):
+                continue
+            function = tool_call.get("function") or {}
+            name = function.get("name", "")
+            if isinstance(name, str):
+                names.append(name)
+
+    if isinstance(content, list):
+        for item in content:
+            if not isinstance(item, dict) or item.get("type") != "tool_use":
+                continue
+            name = item.get("name", "")
+            if isinstance(name, str):
+                names.append(name)
+
+    return names
 
 
 # ==================================================================================================
@@ -1317,7 +1365,11 @@ def ensure_alternating_roles(messages: List[UnifiedMessage]) -> List[UnifiedMess
 # Kiro History Building
 # ==================================================================================================
 
-def build_kiro_history(messages: List[UnifiedMessage], model_id: str) -> List[Dict[str, Any]]:
+def build_kiro_history(
+    messages: List[UnifiedMessage],
+    model_id: str,
+    tool_name_mapping: ToolNameMapping = EMPTY_TOOL_NAME_MAPPING,
+) -> List[Dict[str, Any]]:
     """
     Builds history array for Kiro API from unified messages.
     
@@ -1389,7 +1441,11 @@ def build_kiro_history(messages: List[UnifiedMessage], model_id: str) -> List[Di
             assistant_response = {"content": content}
             
             # Process tool_calls
-            tool_uses = extract_tool_uses_from_message(msg.content, msg.tool_calls)
+            tool_uses = extract_tool_uses_from_message(
+                msg.content,
+                msg.tool_calls,
+                tool_name_mapping=tool_name_mapping,
+            )
             if tool_uses:
                 assistant_response["toolUses"] = tool_uses
             
@@ -1434,9 +1490,6 @@ def build_kiro_payload(
     """
     # Process tools with long descriptions
     processed_tools, tool_documentation = process_tools_with_long_descriptions(tools)
-    
-    # Validate tool names against Kiro API 64-character limit
-    validate_tool_names(processed_tools)
     
     # Add tool documentation to system prompt if present
     full_system_prompt = system_prompt
@@ -1485,14 +1538,28 @@ def build_kiro_payload(
     # Build history (all messages except the last one)
     history_messages = merged_messages[:-1] if len(merged_messages) > 1 else []
     
+    # Build one request-scoped mapping for definitions and historical tool calls.
+    tool_names = [tool.name for tool in processed_tools or []]
+    for message in history_messages:
+        if message.role == "assistant":
+            tool_names.extend(
+                extract_tool_names_from_message(message.content, message.tool_calls)
+            )
+    tool_name_mapping = build_tool_name_mapping(tool_names)
+    validate_tool_names(processed_tools, tool_name_mapping)
+
     # If there's a system prompt, add it to the first user message in history
     if full_system_prompt and history_messages:
         first_msg = history_messages[0]
         if first_msg.role == "user":
             original_content = extract_text_content(first_msg.content)
             first_msg.content = f"{full_system_prompt}\n\n{original_content}"
-    
-    history = build_kiro_history(history_messages, model_id)
+
+    history = build_kiro_history(
+        history_messages,
+        model_id,
+        tool_name_mapping=tool_name_mapping,
+    )
     
     # Current message (the last one)
     current_message = merged_messages[-1]
@@ -1530,7 +1597,10 @@ def build_kiro_payload(
     user_input_context: Dict[str, Any] = {}
     
     # Add tools if present
-    kiro_tools = convert_tools_to_kiro_format(processed_tools)
+    kiro_tools = convert_tools_to_kiro_format(
+        processed_tools,
+        tool_name_mapping=tool_name_mapping,
+    )
     if kiro_tools:
         user_input_context["tools"] = kiro_tools
     
@@ -1594,4 +1664,8 @@ def build_kiro_payload(
                 f"({stats.original_bytes} -> {stats.final_bytes} bytes)"
             )
 
-    return KiroPayloadResult(payload=payload, tool_documentation=tool_documentation)
+    return KiroPayloadResult(
+        payload=payload,
+        tool_documentation=tool_documentation,
+        tool_name_mapping=tool_name_mapping,
+    )

@@ -251,6 +251,12 @@ Changes in this fork that are not yet in upstream:
 
 **`setup.sh`** — Automated installer for Enterprise / IdC accounts, described above.
 
+**Transparent aliases for long tool names** — Kiro limits tool names to 64 characters, while
+MCP clients can generate longer names such as `mcp__<server>__<tool>`. The gateway now assigns
+deterministic, request-scoped aliases only on the Kiro-facing side and restores the exact original
+names in OpenAI and Anthropic responses, in both streaming and non-streaming modes. Tool IDs,
+arguments, results, and short names are unchanged; MCP server names no longer need manual shortening.
+
 **Support for `role: "system"` in the Anthropic endpoint** — Claude Code sends the system prompt
 as a message inside the `messages` array, while the Anthropic API specifies it as a separate
 top-level `system` field. Upstream rejects these requests with an HTTP 422 validation error.

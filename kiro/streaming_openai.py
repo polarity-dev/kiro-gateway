@@ -44,6 +44,11 @@ from kiro.config import (
     FAKE_REASONING_HANDLING,
 )
 from kiro.tokenizer import count_tokens, count_message_tokens, count_tools_tokens
+from kiro.tool_names import (
+    EMPTY_TOOL_NAME_MAPPING,
+    ToolNameMapping,
+    ToolNameTextRestorer,
+)
 
 # Import from streaming_core - reuse shared parsing logic
 from kiro.streaming_core import (
@@ -69,6 +74,21 @@ except ImportError:
 __all__ = ['FirstTokenTimeoutError', 'stream_kiro_to_openai', 'stream_with_first_token_retry', 'collect_stream_response']
 
 
+def _restore_tool_call_name(
+    tool_call: dict,
+    tool_name_mapping: ToolNameMapping,
+) -> dict:
+    """Copy a Kiro tool call and restore its client-facing name."""
+    restored = dict(tool_call)
+    function = dict(restored.get("function") or {})
+    if function:
+        function["name"] = tool_name_mapping.to_original(function.get("name", ""))
+        restored["function"] = function
+    elif "name" in restored:
+        restored["name"] = tool_name_mapping.to_original(restored.get("name", ""))
+    return restored
+
+
 async def stream_kiro_to_openai_internal(
     client: httpx.AsyncClient,
     response: httpx.Response,
@@ -78,7 +98,8 @@ async def stream_kiro_to_openai_internal(
     first_token_timeout: float = FIRST_TOKEN_TIMEOUT,
     request_messages: Optional[list] = None,
     request_tools: Optional[list] = None,
-    conversation_id: Optional[str] = None
+    conversation_id: Optional[str] = None,
+    tool_name_mapping: ToolNameMapping = EMPTY_TOOL_NAME_MAPPING,
 ) -> AsyncGenerator[str, None]:
     """
     Internal generator for converting Kiro stream to OpenAI format.
@@ -122,40 +143,48 @@ async def stream_kiro_to_openai_internal(
     context_usage_percentage = None
     full_content = ""
     full_thinking_content = ""  # Accumulated thinking content for non-streaming
+    text_restorer = ToolNameTextRestorer(tool_name_mapping)
     
     streaming_error_occurred = False
     tool_calls_from_stream = []
-    
+
+    def format_content_chunk(content: str) -> str:
+        """Format one client-facing text delta and track the first chunk."""
+        nonlocal first_chunk
+        delta = {"content": content}
+        if first_chunk:
+            delta["role"] = "assistant"
+            first_chunk = False
+        chunk = {
+            "id": completion_id,
+            "object": "chat.completion.chunk",
+            "created": created_time,
+            "model": model,
+            "choices": [{"index": 0, "delta": delta, "finish_reason": None}],
+        }
+        return f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+
     try:
         # Use streaming_core.parse_kiro_stream for unified event parsing
         # This handles AWS SSE parsing, first token timeout, and thinking parser
         async for event in parse_kiro_stream(response, first_token_timeout):
             if event.type == "content" and event.content:
-                # Accumulate content for bracket tool call detection
+                # Keep raw content for bracket-call parsing, but never expose aliases.
                 full_content += event.content
-                
-                # Format as OpenAI chunk
-                delta = {"content": event.content}
-                if first_chunk:
-                    delta["role"] = "assistant"
-                    first_chunk = False
-                
-                openai_chunk = {
-                    "id": completion_id,
-                    "object": "chat.completion.chunk",
-                    "created": created_time,
-                    "model": model,
-                    "choices": [{"index": 0, "delta": delta, "finish_reason": None}]
-                }
-                
-                chunk_text = f"data: {json.dumps(openai_chunk, ensure_ascii=False)}\n\n"
-                
+                content = text_restorer.feed(event.content)
+                if not content:
+                    continue
+
+                chunk_text = format_content_chunk(content)
                 if debug_logger:
                     debug_logger.log_modified_chunk(chunk_text.encode('utf-8'))
-                
                 yield chunk_text
             
             elif event.type == "thinking" and event.thinking_content:
+                pending_text = text_restorer.flush()
+                if pending_text:
+                    yield format_content_chunk(pending_text)
+
                 # Accumulate thinking content
                 full_thinking_content += event.thinking_content
                 
@@ -185,8 +214,12 @@ async def stream_kiro_to_openai_internal(
                 yield chunk_text
             
             elif event.type == "tool_use" and event.tool_use:
-                tool = event.tool_use
-                
+                pending_text = text_restorer.flush()
+                if pending_text:
+                    yield format_content_chunk(pending_text)
+
+                tool = _restore_tool_call_name(event.tool_use, tool_name_mapping)
+
                 # Extract tool name safely (handle None/missing fields)
                 tool_name = ""
                 if tool:
@@ -259,8 +292,8 @@ async def stream_kiro_to_openai_internal(
                             # Skip normal tool_use processing
                             continue
                 
-                # Collect tool calls from stream (normal tools, not web_search)
-                tool_calls_from_stream.append(event.tool_use)
+                # Collect the client-facing copy, preserving the parser event unchanged.
+                tool_calls_from_stream.append(tool)
             
             elif event.type == "usage" and event.usage:
                 metering_data = event.usage
@@ -268,13 +301,20 @@ async def stream_kiro_to_openai_internal(
             elif event.type == "context_usage" and event.context_usage_percentage is not None:
                 context_usage_percentage = event.context_usage_percentage
         
+        pending_text = text_restorer.flush()
+        if pending_text:
+            yield format_content_chunk(pending_text)
+
         # Track completion signals for truncation detection
         received_usage = metering_data is not None
         received_context_usage = context_usage_percentage is not None
         stream_completed_normally = received_usage or received_context_usage
         
         # Check bracket-style tool calls in full content
-        bracket_tool_calls = parse_bracket_tool_calls(full_content)
+        bracket_tool_calls = [
+            _restore_tool_call_name(tool_call, tool_name_mapping)
+            for tool_call in parse_bracket_tool_calls(full_content)
+        ]
         all_tool_calls = tool_calls_from_stream + bracket_tool_calls
         all_tool_calls = deduplicate_tool_calls(all_tool_calls)
         
@@ -302,7 +342,9 @@ async def stream_kiro_to_openai_internal(
             finish_reason = "stop"
         
         # Count completion_tokens (output) using tiktoken
-        completion_tokens = count_tokens(full_content + full_thinking_content)
+        completion_tokens = count_tokens(
+            tool_name_mapping.restore_text(full_content) + full_thinking_content
+        )
         
         # Calculate total_tokens based on context_usage_percentage from Kiro API
         # context_usage shows TOTAL percentage of context usage (input + output)
@@ -454,7 +496,8 @@ async def stream_kiro_to_openai(
     model_cache: "ModelInfoCache",
     auth_manager: "KiroAuthManager",
     request_messages: Optional[list] = None,
-    request_tools: Optional[list] = None
+    request_tools: Optional[list] = None,
+    tool_name_mapping: ToolNameMapping = EMPTY_TOOL_NAME_MAPPING,
 ) -> AsyncGenerator[str, None]:
     """
     Generator for converting Kiro stream to OpenAI format.
@@ -477,7 +520,8 @@ async def stream_kiro_to_openai(
     async for chunk in stream_kiro_to_openai_internal(
         client, response, model, model_cache, auth_manager,
         request_messages=request_messages,
-        request_tools=request_tools
+        request_tools=request_tools,
+        tool_name_mapping=tool_name_mapping,
     ):
         yield chunk
 
@@ -492,7 +536,8 @@ async def stream_with_first_token_retry(
     max_retries: int = FIRST_TOKEN_MAX_RETRIES,
     first_token_timeout: float = FIRST_TOKEN_TIMEOUT,
     request_messages: Optional[list] = None,
-    request_tools: Optional[list] = None
+    request_tools: Optional[list] = None,
+    tool_name_mapping: ToolNameMapping = EMPTY_TOOL_NAME_MAPPING,
 ) -> AsyncGenerator[str, None]:
     """
     Streaming with automatic retry on first token timeout.
@@ -557,7 +602,8 @@ async def stream_with_first_token_retry(
             auth_manager,
             first_token_timeout=first_token_timeout,
             request_messages=request_messages,
-            request_tools=request_tools
+            request_tools=request_tools,
+            tool_name_mapping=tool_name_mapping,
         ):
             yield chunk
     
@@ -580,7 +626,8 @@ async def collect_stream_response(
     model_cache: "ModelInfoCache",
     auth_manager: "KiroAuthManager",
     request_messages: Optional[list] = None,
-    request_tools: Optional[list] = None
+    request_tools: Optional[list] = None,
+    tool_name_mapping: ToolNameMapping = EMPTY_TOOL_NAME_MAPPING,
 ) -> dict:
     """
     Collect full response from streaming stream.
@@ -614,7 +661,8 @@ async def collect_stream_response(
         model_cache,
         auth_manager,
         request_messages=request_messages,
-        request_tools=request_tools
+        request_tools=request_tools,
+        tool_name_mapping=tool_name_mapping,
     ):
         if not chunk_str.startswith("data:"):
             continue

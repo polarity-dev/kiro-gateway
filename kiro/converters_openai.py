@@ -43,6 +43,7 @@ from kiro.converters_core import (
     UnifiedMessage,
     UnifiedTool,
     ThinkingConfig,
+    KiroPayloadResult,
     build_kiro_payload as core_build_kiro_payload,
 )
 
@@ -389,11 +390,11 @@ def extract_thinking_config_from_openai(request: ChatCompletionRequest) -> Think
 # Main Entry Point
 # ==================================================================================================
 
-def build_kiro_payload(
+def build_kiro_payload_result(
     request_data: ChatCompletionRequest,
     conversation_id: str,
-    profile_arn: str
-) -> dict:
+    profile_arn: str,
+) -> KiroPayloadResult:
     """
     Builds complete payload for Kiro API from OpenAI request.
     
@@ -442,4 +443,17 @@ def build_kiro_payload(
         thinking_config=thinking_config
     )
     
-    return result.payload
+    return result
+
+
+def build_kiro_payload(
+    request_data: ChatCompletionRequest,
+    conversation_id: str,
+    profile_arn: str,
+) -> dict:
+    """Build a Kiro payload while preserving the legacy dictionary contract."""
+    return build_kiro_payload_result(
+        request_data,
+        conversation_id,
+        profile_arn,
+    ).payload

@@ -38,6 +38,7 @@ from kiro.converters_core import (
     UnifiedMessage,
     UnifiedTool,
     ThinkingConfig,
+    KiroPayloadResult,
     build_kiro_payload,
     extract_text_content,
     extract_images_from_content,
@@ -425,9 +426,9 @@ def extract_thinking_config_from_anthropic(request: AnthropicMessagesRequest) ->
     return ThinkingConfig(enabled=True, budget_tokens=None)
 
 
-def anthropic_to_kiro(
+def anthropic_to_kiro_result(
     request: AnthropicMessagesRequest, conversation_id: str, profile_arn: str
-) -> dict:
+) -> KiroPayloadResult:
     """
     Converts Anthropic Messages API request to Kiro API payload.
 
@@ -502,4 +503,11 @@ def anthropic_to_kiro(
         thinking_config=thinking_config,
     )
 
-    return result.payload
+    return result
+
+
+def anthropic_to_kiro(
+    request: AnthropicMessagesRequest, conversation_id: str, profile_arn: str
+) -> dict:
+    """Build a Kiro payload while preserving the legacy dictionary contract."""
+    return anthropic_to_kiro_result(request, conversation_id, profile_arn).payload

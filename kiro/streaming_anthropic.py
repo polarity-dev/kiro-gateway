@@ -50,6 +50,11 @@ from kiro.streaming_core import (
 from kiro.tokenizer import count_tokens, estimate_request_tokens
 from kiro.parsers import parse_bracket_tool_calls, deduplicate_tool_calls
 from kiro.config import FIRST_TOKEN_TIMEOUT, FIRST_TOKEN_MAX_RETRIES, FAKE_REASONING_HANDLING
+from kiro.tool_names import (
+    EMPTY_TOOL_NAME_MAPPING,
+    ToolNameMapping,
+    ToolNameTextRestorer,
+)
 
 if TYPE_CHECKING:
     from kiro.auth import KiroAuthManager
@@ -135,7 +140,8 @@ async def stream_kiro_to_anthropic(
     request_messages: Optional[list] = None,
     request_tools: Optional[list] = None,
     request_system: Optional[Any] = None,
-    conversation_id: Optional[str] = None
+    conversation_id: Optional[str] = None,
+    tool_name_mapping: ToolNameMapping = EMPTY_TOOL_NAME_MAPPING,
 ) -> AsyncGenerator[str, None]:
     """
     Generator for converting Kiro stream to Anthropic SSE format.
@@ -165,6 +171,7 @@ async def stream_kiro_to_anthropic(
     output_tokens = 0
     full_content = ""
     full_thinking_content = ""
+    text_restorer = ToolNameTextRestorer(tool_name_mapping)
     
     # NOTE: Anthropic streaming spec requires input_tokens in message_start (beginning),
     # but Kiro API provides accurate context_usage at the end of stream.
@@ -222,8 +229,9 @@ async def stream_kiro_to_anthropic(
         
         async for event in parse_kiro_stream(response, first_token_timeout):
             if event.type == "content":
-                content = event.content or ""
-                full_content += content
+                raw_content = event.content or ""
+                full_content += raw_content
+                content = text_restorer.feed(raw_content)
                 
                 # Close thinking block if it was open and we're now getting regular content
                 if thinking_block_started and thinking_block_index is not None:
@@ -259,6 +267,14 @@ async def stream_kiro_to_anthropic(
                     })
             
             elif event.type == "thinking":
+                pending_text = text_restorer.flush()
+                if pending_text and text_block_started and text_block_index is not None:
+                    yield format_sse_event("content_block_delta", {
+                        "type": "content_block_delta",
+                        "index": text_block_index,
+                        "delta": {"type": "text_delta", "text": pending_text},
+                    })
+
                 thinking_content = event.thinking_content or ""
                 full_thinking_content += thinking_content
                 
@@ -324,6 +340,14 @@ async def stream_kiro_to_anthropic(
                 # For "strip" mode, we just skip the thinking content
             
             elif event.type == "tool_use" and event.tool_use:
+                pending_text = text_restorer.flush()
+                if pending_text and text_block_started and text_block_index is not None:
+                    yield format_sse_event("content_block_delta", {
+                        "type": "content_block_delta",
+                        "index": text_block_index,
+                        "delta": {"type": "text_delta", "text": pending_text},
+                    })
+
                 # Close thinking block if open
                 if thinking_block_started and thinking_block_index is not None:
                     yield format_sse_event("content_block_stop", {
@@ -344,7 +368,9 @@ async def stream_kiro_to_anthropic(
                 
                 tool = event.tool_use
                 tool_id = tool.get("id") or f"toolu_{uuid.uuid4().hex[:24]}"
-                tool_name = tool.get("function", {}).get("name", "") or tool.get("name", "")
+                tool_name = tool_name_mapping.to_original(
+                    tool.get("function", {}).get("name", "") or tool.get("name", "")
+                )
                 tool_input = tool.get("function", {}).get("arguments", {}) or tool.get("input", {})
                 
                 # ==============================================================================
@@ -523,6 +549,14 @@ async def stream_kiro_to_anthropic(
             elif event.type == "usage" and event.usage:
                 upstream_cache_usage.update(_extract_cache_usage_fields(event.usage))
         
+        pending_text = text_restorer.flush()
+        if pending_text and text_block_started and text_block_index is not None:
+            yield format_sse_event("content_block_delta", {
+                "type": "content_block_delta",
+                "index": text_block_index,
+                "delta": {"type": "text_delta", "text": pending_text},
+            })
+
         # Track completion signals for truncation detection
         stream_completed_normally = context_usage_percentage is not None
         
@@ -549,7 +583,9 @@ async def stream_kiro_to_anthropic(
             
             for tc in bracket_tool_calls:
                 tool_id = tc.get("id") or f"toolu_{uuid.uuid4().hex[:24]}"
-                tool_name = tc.get("function", {}).get("name", "")
+                tool_name = tool_name_mapping.to_original(
+                    tc.get("function", {}).get("name", "")
+                )
                 tool_input = tc.get("function", {}).get("arguments", {})
                 
                 if isinstance(tool_input, str):
@@ -622,7 +658,9 @@ async def stream_kiro_to_anthropic(
             )
         
         # Calculate output tokens
-        output_tokens = count_tokens(full_content + full_thinking_content)
+        output_tokens = count_tokens(
+            tool_name_mapping.restore_text(full_content) + full_thinking_content
+        )
         
         # Calculate total tokens from context usage if available
         if context_usage_percentage is not None:
@@ -725,7 +763,8 @@ async def collect_anthropic_response(
     auth_manager: "KiroAuthManager",
     request_messages: Optional[list] = None,
     request_tools: Optional[list] = None,
-    request_system: Optional[Any] = None
+    request_system: Optional[Any] = None,
+    tool_name_mapping: ToolNameMapping = EMPTY_TOOL_NAME_MAPPING,
 ) -> dict:
     """
     Collect full response from Kiro stream in Anthropic format.
@@ -774,7 +813,7 @@ async def collect_anthropic_response(
     
     # Add text block if there's content
     # For include_as_text mode, prepend thinking content to regular content
-    text_content = result.content
+    text_content = tool_name_mapping.restore_text(result.content)
     if result.thinking_content and FAKE_REASONING_HANDLING == "include_as_text":
         text_content = result.thinking_content + text_content
     
@@ -787,7 +826,9 @@ async def collect_anthropic_response(
     # Add tool use blocks
     for tc in result.tool_calls:
         tool_id = tc.get("id") or f"toolu_{uuid.uuid4().hex[:24]}"
-        tool_name = tc.get("function", {}).get("name", "") or tc.get("name", "")
+        tool_name = tool_name_mapping.to_original(
+            tc.get("function", {}).get("name", "") or tc.get("name", "")
+        )
         tool_input = tc.get("function", {}).get("arguments", {}) or tc.get("input", {})
         
         if isinstance(tool_input, str):
@@ -804,7 +845,7 @@ async def collect_anthropic_response(
         })
     
     # Calculate output tokens
-    output_tokens = count_tokens(result.content + result.thinking_content)
+    output_tokens = count_tokens(text_content + result.thinking_content)
     
     # Calculate from context usage if available
     if result.context_usage_percentage is not None:
@@ -873,7 +914,8 @@ async def stream_with_first_token_retry_anthropic(
     first_token_timeout: float = FIRST_TOKEN_TIMEOUT,
     request_messages: Optional[list] = None,
     request_tools: Optional[list] = None,
-    request_system: Optional[Any] = None
+    request_system: Optional[Any] = None,
+    tool_name_mapping: ToolNameMapping = EMPTY_TOOL_NAME_MAPPING,
 ) -> AsyncGenerator[str, None]:
     """
     Streaming with automatic retry on first token timeout for Anthropic API.
@@ -934,6 +976,7 @@ async def stream_with_first_token_retry_anthropic(
             request_messages=request_messages,
             request_tools=request_tools,
             request_system=request_system,
+            tool_name_mapping=tool_name_mapping,
         ):
             yield chunk
     

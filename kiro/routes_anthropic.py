@@ -44,7 +44,7 @@ from kiro.models_anthropic import (
 )
 from kiro.auth import KiroAuthManager, AuthType
 from kiro.cache import ModelInfoCache
-from kiro.converters_anthropic import anthropic_to_kiro
+from kiro.converters_anthropic import anthropic_to_kiro_result
 from kiro.streaming_anthropic import (
     stream_kiro_to_anthropic,
     collect_anthropic_response,
@@ -380,11 +380,13 @@ async def messages(
             profile_arn_for_payload = auth_manager.profile_arn or PROFILE_ARN or ""
             
             try:
-                kiro_payload = anthropic_to_kiro(
+                payload_result = anthropic_to_kiro_result(
                     request_data,
                     conversation_id,
                     profile_arn_for_payload
                 )
+                kiro_payload = payload_result.payload
+                tool_name_mapping = payload_result.tool_name_mapping
             except ValueError as e:
                 logger.error(f"Conversion error: {e}")
                 return JSONResponse(
@@ -457,6 +459,7 @@ async def messages(
                                     request_messages=messages_for_tokenizer,
                                     request_tools=tools_for_tokenizer,
                                     request_system=system_for_tokenizer,
+                                    tool_name_mapping=tool_name_mapping,
                                 ):
                                     yield chunk
                             except GeneratorExit:
@@ -505,6 +508,7 @@ async def messages(
                             request_messages=messages_for_tokenizer,
                             request_tools=tools_for_tokenizer,
                             request_system=system_for_tokenizer,
+                            tool_name_mapping=tool_name_mapping,
                         )
                         
                         await http_client.close()
@@ -688,11 +692,13 @@ async def messages(
     profile_arn_for_payload = auth_manager.profile_arn or PROFILE_ARN or ""
     
     try:
-        kiro_payload = anthropic_to_kiro(
+        payload_result = anthropic_to_kiro_result(
             request_data,
             conversation_id,
             profile_arn_for_payload
         )
+        kiro_payload = payload_result.payload
+        tool_name_mapping = payload_result.tool_name_mapping
     except ValueError as e:
         logger.error(f"Conversion error: {e}")
         return JSONResponse(
@@ -815,6 +821,7 @@ async def messages(
                         request_messages=messages_for_tokenizer,
                         request_tools=tools_for_tokenizer,
                         request_system=system_for_tokenizer,
+                        tool_name_mapping=tool_name_mapping,
                     ):
                         yield chunk
                 except GeneratorExit:
@@ -864,6 +871,7 @@ async def messages(
                 request_messages=messages_for_tokenizer,
                 request_tools=tools_for_tokenizer,
                 request_system=system_for_tokenizer,
+                tool_name_mapping=tool_name_mapping,
             )
             
             await http_client.close()
