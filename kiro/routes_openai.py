@@ -47,7 +47,7 @@ from kiro.models_openai import (
 from kiro.auth import KiroAuthManager, AuthType
 from kiro.cache import ModelInfoCache
 from kiro.model_resolver import ModelResolver
-from kiro.converters_openai import build_kiro_payload
+from kiro.converters_openai import build_kiro_payload_result
 from kiro.streaming_openai import stream_kiro_to_openai, collect_stream_response, stream_with_first_token_retry
 from kiro.http_client import KiroHttpClient
 from kiro.utils import generate_conversation_id
@@ -333,11 +333,13 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
             profile_arn_for_payload = auth_manager.profile_arn or PROFILE_ARN or ""
             
             try:
-                kiro_payload = build_kiro_payload(
+                payload_result = build_kiro_payload_result(
                     request_data,
                     conversation_id,
                     profile_arn_for_payload
                 )
+                kiro_payload = payload_result.payload
+                tool_name_mapping = payload_result.tool_name_mapping
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e))
             
@@ -395,7 +397,8 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
                                     auth_manager=auth_manager,
                                     initial_response=response,
                                     request_messages=messages_for_tokenizer,
-                                    request_tools=tools_for_tokenizer
+                                    request_tools=tools_for_tokenizer,
+                                    tool_name_mapping=tool_name_mapping,
                                 ):
                                     yield chunk
                             except GeneratorExit:
@@ -435,7 +438,8 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
                             model_cache,
                             auth_manager,
                             request_messages=messages_for_tokenizer,
-                            request_tools=tools_for_tokenizer
+                            request_tools=tools_for_tokenizer,
+                            tool_name_mapping=tool_name_mapping,
                         )
                         
                         await http_client.close()
@@ -581,11 +585,13 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
     profile_arn_for_payload = auth_manager.profile_arn or PROFILE_ARN or ""
     
     try:
-        kiro_payload = build_kiro_payload(
+        payload_result = build_kiro_payload_result(
             request_data,
             conversation_id,
             profile_arn_for_payload
         )
+        kiro_payload = payload_result.payload
+        tool_name_mapping = payload_result.tool_name_mapping
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     
@@ -691,7 +697,8 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
                         auth_manager=auth_manager,
                         initial_response=response,
                         request_messages=messages_for_tokenizer,
-                        request_tools=tools_for_tokenizer
+                        request_tools=tools_for_tokenizer,
+                        tool_name_mapping=tool_name_mapping,
                     ):
                         yield chunk
                 except GeneratorExit:
@@ -737,7 +744,8 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
                 model_cache,
                 auth_manager,
                 request_messages=messages_for_tokenizer,
-                request_tools=tools_for_tokenizer
+                request_tools=tools_for_tokenizer,
+                tool_name_mapping=tool_name_mapping,
             )
             
             await http_client.close()
