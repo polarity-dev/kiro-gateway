@@ -1,0 +1,21 @@
+# kiro-tracker config for the scheduled usage dispatcher.
+#
+# Copy this file to `tracker.conf` (same directory) and fill in the real values.
+# `tracker.conf` is gitignored and MUST NOT be committed.
+#
+# You normally do NOT create this by hand: ask the agent to "install the kiro
+# tracker" and it will read the endpoint and API key from 1Password (vault
+# Shared, item "kiro-tracker API key") and write them here for you. See
+# .kiro/steering/kiro-tracker.md.
+#
+# Format: simple KEY=VALUE lines. A leading `export` and surrounding quotes are
+# tolerated so the file can also be `source`d by a shell.
+
+# Base URL of the tracker API (the "endpoint" field in 1Password).
+KIRO_TRACKER_API=https://6exa5ymcpg.execute-api.eu-west-1.amazonaws.com/production
+
+# The x-api-key value (the "credential" field in 1Password).
+KIRO_TRACKER_KEY=REPLACE_WITH_API_KEY
+
+# Optional: usage resource type to report. Defaults to AGENTIC_REQUEST.
+# KIRO_TRACKER_RESOURCE_TYPE=AGENTIC_REQUEST

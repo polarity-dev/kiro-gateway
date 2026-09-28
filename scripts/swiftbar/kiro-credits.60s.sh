@@ -83,6 +83,17 @@ else
     echo "⚡️${used_display}/${cap_display}"
 fi
 
+# --- Fire the scheduled tracker send in the background (non-blocking) ---
+# The dispatcher decides on its own whether a send is due (morning/midday/
+# evening windows + a per-day marker), so it is safe to call every 60s. We
+# background it and never wait: a slow or unreachable tracker API must not
+# stall the menu bar refresh. All output is discarded here; run the dispatcher
+# by hand to see why a send failed.
+DISPATCHER="$REPO_ROOT/scripts/send_usage_scheduled.py"
+if [ -f "$DISPATCHER" ]; then
+    ("$PYTHON" "$DISPATCHER" >/dev/null 2>&1 &) </dev/null
+fi
+
 # --- Dropdown ---
 echo "---"
 echo "Kiro Credits (${pct:-n/a}) | size=14"

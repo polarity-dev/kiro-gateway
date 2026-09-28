@@ -28,6 +28,9 @@ debug*.json
 _notes/
 requests/
 
+# kiro-tracker dispatcher config (contains the tracker API key)
+scripts/swiftbar/tracker.conf
+
 # Testing
 .pytest_cache/
 .coverage
