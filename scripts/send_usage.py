@@ -8,9 +8,12 @@ kiro-tracker ingest endpoint:
 
     POST {TRACKER_API}/usage
     x-api-key: <api key>
-    { "arn": <profile arn>, "tokenAvailable": <int>, "tokenSpent": <int> }
+    { "userId": <identity center userId>, "tokenAvailable": <int>, "tokenSpent": <int> }
 
-The tracker keys each user by their Kiro profile ARN, so no user id is needed.
+The tracker keys each user by their personal IAM Identity Center userId (read
+from the GetUsageLimits response). This is what distinguishes users: the profile
+ARN is the org subscription's ARN and is identical for everyone on the same
+subscription, so it cannot be used as the per-user key.
 
 Configuration (env vars, with sensible fallbacks):
     KIRO_TRACKER_API   Base URL of the tracker API (e.g.
@@ -149,6 +152,39 @@ def _extract_usage(data: dict) -> tuple[int, int]:
     return int(round(float(used))), int(round(float(cap)))
 
 
+def _extract_user_id(data: dict) -> str | None:
+    """
+    Pull the personal IAM Identity Center userId from a GetUsageLimits response.
+
+    Unlike the profile ARN (which is the org subscription's ARN and therefore
+    identical for every user on the same subscription), this ``userId`` is the
+    caller's personal Identity Center identity. It has the shape
+    ``<identitystore>.<uuid>``, e.g.
+    ``d-93674552ed.e2f534a4-4081-700e-8184-086e15cb58f7``, is stable across
+    sessions, and uniquely distinguishes each person. It is the key the tracker
+    uses to separate users.
+
+    The userId lives under the ``userInfo`` object in the GetUsageLimits
+    response: ``{"userInfo": {"userId": "d-....<uuid>"}}``.
+
+    Args:
+        data: Parsed GetUsageLimits JSON.
+
+    Returns:
+        The userId string, or None if the response does not carry one.
+    """
+    user_info = data.get("userInfo")
+    if isinstance(user_info, dict):
+        user_id = user_info.get("userId")
+        if isinstance(user_id, str) and user_id.strip():
+            return user_id.strip()
+    # Some responses may carry it top-level; accept that too as a fallback.
+    user_id = data.get("userId")
+    if isinstance(user_id, str) and user_id.strip():
+        return user_id.strip()
+    return None
+
+
 def _resolve_api_key() -> str:
     """
     Resolve the tracker API key: env var first, then 1Password via `op read`.
@@ -185,14 +221,14 @@ def _resolve_api_key() -> str:
     return out.stdout.strip()
 
 
-def _post_snapshot(api_base: str, api_key: str, arn: str, spent: int, available: int) -> dict:
+def _post_snapshot(api_base: str, api_key: str, user_id: str, spent: int, available: int) -> dict:
     """
     POST one usage snapshot to the tracker ingest endpoint.
 
     Args:
         api_base: Tracker API base URL (trailing slashes are trimmed).
         api_key: x-api-key value.
-        arn: Kiro profile ARN identifying the user.
+        user_id: Personal IAM Identity Center userId identifying the user.
         spent: Tokens spent (int >= 0).
         available: Tokens available (int >= 0).
 
@@ -203,7 +239,7 @@ def _post_snapshot(api_base: str, api_key: str, arn: str, spent: int, available:
         SystemExit: On any non-201 response or transport error.
     """
     url = api_base.rstrip("/") + "/usage"
-    payload = {"arn": arn, "tokenAvailable": available, "tokenSpent": spent}
+    payload = {"userId": user_id, "tokenAvailable": available, "tokenSpent": spent}
     try:
         resp = httpx.post(
             url,
@@ -235,13 +271,21 @@ def main() -> int:
 
     try:
         auth = _build_auth()
-        if not auth.profile_arn:
-            print("No profile ARN available from Kiro auth; cannot identify the user.", file=sys.stderr)
-            return 2
         data = asyncio.run(_fetch_usage(auth, resource_type))
         spent, available = _extract_usage(data)
+        # The personal userId is the identity key. The profile ARN is the org
+        # subscription's ARN (shared by all users), so it cannot distinguish
+        # users; we only fall back to it if the userId is unexpectedly absent.
+        user_id = _extract_user_id(data) or auth.profile_arn
+        if not user_id:
+            print(
+                "GetUsageLimits returned no userId and no profile ARN is available; "
+                "cannot identify the user.",
+                file=sys.stderr,
+            )
+            return 2
         api_key = _resolve_api_key()
-        result = _post_snapshot(api_base, api_key, auth.profile_arn, spent, available)
+        result = _post_snapshot(api_base, api_key, user_id, spent, available)
     except SystemExit as e:
         # SystemExit carries our user-facing message.
         print(str(e), file=sys.stderr)
@@ -252,7 +296,7 @@ def main() -> int:
 
     print(
         f"Sent snapshot: {result.get('tokenSpent')} / {result.get('tokenAvailable')} "
-        f"tokens at {result.get('recordedAt')} for {result.get('arn')}"
+        f"tokens at {result.get('recordedAt')} for {result.get('userId')}"
     )
     return 0
 

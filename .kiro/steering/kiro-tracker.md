@@ -16,6 +16,14 @@ runbook. Il punto centrale: **recuperi tu autonomamente le credenziali da
 1Password e le scrivi nel file di conf gitignorato**, l'utente non le incolla a
 mano.
 
+> **Vincolo non negoziabile: il mapping del nome (Step 5) è OBBLIGATORIO.**
+> Un'installazione non è completa finché lo userId dell'utente non è mappato a
+> un nome. **Non chiudere la procedura, non dire "fatto/installato", e non
+> lasciare andare l'utente** finché non hai eseguito il `PUT /mapping` con
+> successo e verificato che risulti in `GET /mapping`. Senza mapping l'utente
+> compare anonimo nella dashboard: è considerato un'installazione fallita, non
+> parziale. Se manca il nome, **chiedilo prima di concludere** (vedi Step 5).
+
 ## Cosa viene installato
 
 1. **Widget SwiftBar** (`scripts/swiftbar/kiro-credits.60s.sh`) — mostra il
@@ -36,9 +44,11 @@ mano.
    `KIRO_TRACKER_API` (endpoint) e `KIRO_TRACKER_KEY` (API key). **Non è
    tracciato da git** (vedi `.gitignore`). Template versionato:
    `tracker.conf.example`.
-4. **Mapping ARN→nome** (`PUT /mapping` sull'API) — record separato dallo
+4. **Mapping userId→nome** (`PUT /mapping` sull'API) — record separato dallo
    snapshot, è ciò che fa comparire il **nome** dell'utente nella dashboard
-   invece del solo ARN. Va registrato una volta per utente (vedi Step 5).
+   invece del solo userId. Va registrato una volta per utente (vedi Step 5).
+   La chiave è lo userId personale IAM Identity Center, non il profile ARN (che
+   è della org e uguale per tutti).
 
 ## Fonte delle credenziali: 1Password vault Shared
 
@@ -151,26 +161,37 @@ invio una tantum (non consuma uno slot schedulato):
 Deve stampare `Sent snapshot for slot 'forced'.`. Se fallisce, l'errore su
 stderr indica la causa (auth Kiro, endpoint, o key sbagliata).
 
-### Step 5 — Registrare il nome dell'utente nella dashboard (mapping ARN→nome)
+### Step 5 — Registrare il nome dell'utente nella dashboard (mapping userId→nome) — OBBLIGATORIO
+
+**Questo step è obbligatorio: l'installazione NON è completa senza.** Non
+proseguire allo Step 6, non dichiarare l'installazione conclusa e non congedare
+l'utente finché il `PUT /mapping` non è andato a buon fine e verificato.
 
 **Questo è ciò che fa comparire il nome dell'utente nella dashboard.** Lo
-snapshot di consumo contiene solo l'ARN; la dashboard aggancia il nome da un
-record di mapping separato. Senza questo step l'utente compare nella dashboard
-in forma anonima (solo ARN), non con il suo nome.
+snapshot di consumo contiene solo lo `userId`; la dashboard aggancia il nome da
+un record di mapping separato. Senza questo step l'utente compare nella
+dashboard in forma anonima (solo userId), non con il suo nome.
+
+Sull'identità: la chiave utente è lo **userId personale IAM Identity Center**
+(es. `d-93674552ed.e2f534a4-4081-700e-8184-086e15cb58f7`), NON il profile ARN.
+Il profile ARN è quello della subscription org ed è identico per tutti gli
+utenti, quindi non distingue le persone; lo userId sì. Il client lo estrae da
+solo dalla risposta `GetUsageLimits` e lo manda nel campo `userId`.
 
 **Sei tu (l'agente) a fare il PUT del mapping**, non l'utente a mano. Il flusso:
 
-1. **Ricava l'ARN dell'utente** — lo stampa il test dello Step 4
-   (`... for arn:aws:codewhisperer:...`), oppure leggilo dalla sua auth Kiro.
+1. **Ricava lo userId dell'utente** — lo stampa il test dello Step 4
+   (`... for d-<identitystore>.<uuid>`), oppure leggilo dalla risposta
+   `GetUsageLimits`.
 2. **Chiedi all'utente con che nome vuole comparire** se non lo conosci già.
-   Non inventare il nome e non dedurlo dall'ARN o dall'email: chiedi
+   Non inventare il nome e non dedurlo dallo userId o dall'email: chiedi
    esplicitamente "con che nome vuoi comparire nella dashboard?".
 3. **Gestisci l'omonimia.** Prima del PUT, leggi i mapping esistenti
-   (`GET /mapping`, vedi sotto). Se il nome scelto è già usato da un altro ARN,
-   **fermati e chiedi all'utente un nome distintivo** (es. "Giovanni B.",
+   (`GET /mapping`, vedi sotto). Se il nome scelto è già usato da un altro
+   userId, **fermati e chiedi all'utente un nome distintivo** (es. "Giovanni B.",
    "Giovanni — Marketing"), così due persone omonime restano distinguibili nella
    dashboard. Non sovrascrivere silenziosamente né duplicare un nome già preso.
-4. **Fai il PUT** con l'ARN e il nome concordato.
+4. **Fai il PUT** con lo userId e il nome concordato.
 
 ```bash
 ACCT=<shard>.1password.com   # es. sfsrl.1password.com
@@ -183,7 +204,7 @@ curl -s "$API/mapping" -H "x-api-key: $KEY" | python3 -m json.tool
 # 4. registra il mapping con il nome concordato con l'utente
 curl -s -X PUT "$API/mapping" \
   -H "x-api-key: $KEY" -H "content-type: application/json" \
-  -d '{"arn":"<ARN-utente>","displayName":"<Nome concordato>"}'
+  -d '{"userId":"<userId-utente>","displayName":"<Nome concordato>"}'
 ```
 
 Poi verifica che il nuovo mapping risulti nell'elenco:
@@ -193,9 +214,9 @@ curl -s "$API/mapping" -H "x-api-key: $KEY" | python3 -m json.tool
 ```
 
 Nota per "vedere anche gli altri": la dashboard mostra la riga di consumo di
-**ogni** ARN che manda snapshot, ma con il **nome** solo per gli ARN mappati
-qui. Ogni nuovo collega va mappato una volta (il PUT è idempotente per ARN:
-ri-eseguirlo aggiorna il nome di quello stesso ARN).
+**ogni** userId che manda snapshot, ma con il **nome** solo per gli userId
+mappati qui. Ogni nuovo collega va mappato una volta (il PUT è idempotente per
+userId: ri-eseguirlo aggiorna il nome di quello stesso userId).
 
 ### Step 6 — Installare il widget SwiftBar
 
@@ -234,14 +255,21 @@ open "swiftbar://refreshallplugins"
 - **Con account 1Password multipli passa sempre `--account <shard>.1password.com`**
   ai comandi `op` (il vault `Shared` è sull'account aziendale). Individua
   l'account giusto con `op account list`.
-- **Non dimenticare il mapping del nome (Step 5)**: senza, l'utente compare
-  nella dashboard senza nome. È un passo separato dall'invio degli snapshot.
+- **Il mapping del nome (Step 5) è un gate di chiusura obbligatorio.** Non
+  considerare l'installazione completa, non dire "fatto"/"installato" e non
+  congedare l'utente finché non hai eseguito il `PUT /mapping` con successo e
+  verificato che il nome risulti in `GET /mapping`. Un'installazione senza
+  mapping è fallita, non parziale. Se non conosci il nome, chiedilo e attendi la
+  risposta prima di concludere: non saltare questo passo per "finire prima".
 - **Il PUT del mapping lo fai tu, non l'utente.** Se non conosci il nome,
   **chiedilo esplicitamente** ("con che nome vuoi comparire nella dashboard?");
-  non inventarlo né ricavarlo da ARN/email. Prima del PUT controlla i mapping
+  non inventarlo né ricavarlo da userId/email. Prima del PUT controlla i mapping
   esistenti (`GET /mapping`): in caso di **omonimia** con un nome già assegnato
-  a un altro ARN, fermati e chiedi all'utente un nome distintivo, non
+  a un altro userId, fermati e chiedi all'utente un nome distintivo, non
   sovrascrivere né duplicare.
+- **La chiave utente è lo userId personale IAM Identity Center, non il profile
+  ARN.** L'ARN è della subscription org (uguale per tutti), lo userId distingue
+  le persone. Il client lo estrae da `GetUsageLimits`; il mapping usa `userId`.
 
 ## Riferimenti
 
