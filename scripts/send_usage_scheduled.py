@@ -4,8 +4,8 @@ Scheduled dispatcher for the kiro-tracker usage snapshot.
 
 This wraps ``scripts/send_usage.py`` with a time-window scheduler so it can be
 invoked frequently (e.g. once a minute from the SwiftBar widget) while only
-actually sending a snapshot around three target times a day: morning, midday,
-and evening.
+actually sending a snapshot around three target times a day: night, morning,
+and afternoon.
 
 Why a dispatcher instead of a cron/launchd entry:
     The SwiftBar widget already ticks every 60s. Reusing that tick means no
@@ -13,24 +13,30 @@ Why a dispatcher instead of a cron/launchd entry:
     bands and each band gets exactly one send, on the first tick inside it.
 
 Bands (local time): the day is partitioned into three contiguous bands by the
-cardinal times 12:00 and 18:00. There are no dead gaps -- every moment of the
-day falls into exactly one band, so the morning send fires at the first tick of
-the day whatever the hour (08:30, 09:00, 10:00, ...), not only at 09:00 sharp.
+cardinal times 07:00, 12:00 and 18:00. There are no dead gaps -- every moment
+of the day falls into exactly one band, so a band's send fires at the first
+tick inside it whatever the exact minute, not only on the hour.
 
-    morning   : 00:00-11:59
+    night     : 18:00-06:59  (wraps past midnight)
+    morning   : 07:00-11:59
     afternoon : 12:00-17:59
-    evening   : 18:00-23:59
 
-The send fires on the *first* tick inside a band for which today's band has not
-yet been recorded. A per-band marker guarantees exactly one send per band per
-day (idempotent across the 60s ticks). If the Mac is off for an entire band,
-that band is simply skipped -- we never batch multiple sends at once.
+The ``night`` band straddles midnight, so it is keyed by its *band date*: the
+calendar date on which the band started (18:00). The hours 00:00-06:59 belong
+to the night that began at 18:00 the previous day, so a session at 23:00 and
+one at 02:00 share a single marker and never double-send across midnight.
+
+The send fires on the *first* tick inside a band whose marker (for that band's
+band date) has not yet been recorded. A per-band marker guarantees exactly one
+send per band per band-date (idempotent across the 60s ticks). If the Mac is
+off for an entire band, that band is simply skipped -- we never batch multiple
+sends at once.
 
 State (marker) file:
     ~/.cache/kiro-tracker/send_state.json
-    { "sends": { "2026-09-28": ["morning", "afternoon"] } }
-    Only today's entry is ever kept: reading the state drops every day that is
-    not today, so the file never grows beyond a single day.
+    { "sends": { "2026-09-28": ["night", "morning"] } }
+    Keyed by band date. Only the current band date's entry is kept: reading the
+    state drops every other date, so the file never grows beyond a single day.
 
 Config file (gitignored), searched in this order:
     1. $KIRO_TRACKER_CONF if set
@@ -61,9 +67,9 @@ import json
 import os
 import subprocess
 import sys
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from pathlib import Path
-from typing import Dict, List, NamedTuple, Optional
+from typing import Dict, List, NamedTuple
 
 # Repo root is two levels up: <repo>/scripts/send_usage_scheduled.py
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -79,25 +85,34 @@ class Slot(NamedTuple):
 
     name: str
     start_hour: int  # inclusive (band starts at HH:00)
+    wraps_midnight: bool = False  # True if the band runs past 00:00 into the next day
 
 
-# The day is partitioned into three contiguous bands. Each band runs from its
-# ``start_hour`` up to (but not including) the next band's start_hour; the last
-# band runs to end of day. Ordered by time of day, no gaps, no overlaps.
+# The day is partitioned into three contiguous bands by the cardinal hours
+# 07:00, 12:00 and 18:00. There are no gaps and no overlaps.
+#
+#   night     : 18:00-06:59  (wraps past midnight)
+#   morning   : 07:00-11:59
+#   afternoon : 12:00-17:59
+#
+# ``night`` is the band that wraps midnight: it owns 18:00-23:59 of its band
+# date plus 00:00-06:59 of the following calendar day. Band-date keying (see
+# _band_date) collapses both halves onto a single marker.
 _SLOTS: List[Slot] = [
-    Slot(name="morning", start_hour=0),
+    Slot(name="night", start_hour=18, wraps_midnight=True),
+    Slot(name="morning", start_hour=7),
     Slot(name="afternoon", start_hour=12),
-    Slot(name="evening", start_hour=18),
 ]
 
 
-def _current_slot(now: datetime) -> Optional[Slot]:
+def _current_slot(now: datetime) -> Slot:
     """
     Return the band that contains ``now``.
 
-    Because the three bands partition the whole day with no gaps, this always
-    returns a band (never None). The Optional return type is kept so callers can
-    stay defensive if the band table is ever changed to leave gaps.
+    The three bands partition the whole day with no gaps, so this always returns
+    a band. The ``night`` band wraps midnight (18:00-06:59): any hour at or
+    after its start (>= 18) and any hour before the earliest non-wrapping band
+    starts (< 07) both fall in ``night``.
 
     Args:
         now: The current local datetime.
@@ -106,11 +121,47 @@ def _current_slot(now: datetime) -> Optional[Slot]:
         The matching Slot for ``now``.
     """
     hour = now.hour
-    # Walk bands from latest to earliest; the first whose start_hour <= hour wins.
-    for slot in reversed(_SLOTS):
+    # Daytime bands (non-wrapping): pick the latest whose start_hour <= hour.
+    day_slots = sorted(
+        (s for s in _SLOTS if not s.wraps_midnight),
+        key=lambda s: s.start_hour,
+    )
+    earliest_day_start = day_slots[0].start_hour  # 07
+    night = next(s for s in _SLOTS if s.wraps_midnight)
+
+    # Before the first daytime band opens, or at/after the night band opens:
+    # we are in the wrapping night band.
+    if hour < earliest_day_start or hour >= night.start_hour:
+        return night
+
+    chosen = day_slots[0]
+    for slot in day_slots:
         if hour >= slot.start_hour:
-            return slot
-    return None
+            chosen = slot
+    return chosen
+
+
+def _band_date(now: datetime, slot: Slot) -> date:
+    """
+    Return the band date that keys the marker for ``slot`` at ``now``.
+
+    For normal bands this is simply today's date. For the wrapping ``night``
+    band, the early-morning hours (00:00-06:59) belong to the night that began
+    at 18:00 the *previous* calendar day, so the band date is yesterday. This
+    makes the 18:00-23:59 and 00:00-06:59 halves of one night share a single
+    marker, preventing a duplicate send across midnight.
+
+    Args:
+        now: The current local datetime.
+        slot: The band ``now`` falls into (from ``_current_slot``).
+
+    Returns:
+        The calendar date on which the band started.
+    """
+    if slot.wraps_midnight and now.hour < slot.start_hour:
+        # Early-morning tail of a night that started the previous day.
+        return (now - timedelta(days=1)).date()
+    return now.date()
 
 
 def _load_config_file(conf_path: Path) -> Dict[str, str]:
@@ -170,26 +221,31 @@ def _resolve_env(conf_path: Path) -> Dict[str, str]:
     return env
 
 
-def _load_state(today: date) -> Dict[str, List[str]]:
+def _load_state(band_date: date) -> Dict[str, List[str]]:
     """
-    Load the marker state, keeping only today's entry.
+    Load the marker state, keeping only the current band date's entry.
 
-    Every day that is not ``today`` is discarded on read, so the file never
+    Every date other than ``band_date`` is discarded on read, so the file never
     accumulates history: the markers only exist to answer "did I already send in
-    this band *today*", so yesterday's data is useless. The caller writes the
-    filtered result back via ``_save_state``, so the on-disk file is trimmed the
-    next time a send is recorded.
+    this band for its current band date", so older data is useless. The caller
+    writes the filtered result back via ``_save_state``, so the on-disk file is
+    trimmed the next time a send is recorded.
+
+    Note the key is the *band date*, not strictly today's calendar date: during
+    the early-morning tail of the wrapping night band (00:00-06:59) the band
+    date is yesterday, and that is the entry we must retain so the night marker
+    set the previous evening is still visible.
 
     A corrupt or unreadable state file must never wedge the scheduler; the worst
     case of treating it as empty is one duplicate send, which the tracker
     tolerates (it stores snapshots keyed by time).
 
     Args:
-        today: The current local date; only this day's markers are retained.
+        band_date: The current band date; only this date's markers are retained.
 
     Returns:
-        The ``sends`` mapping, containing at most today's entry:
-        {today_iso: [slot_name, ...]}.
+        The ``sends`` mapping, containing at most the band date's entry:
+        {band_date_iso: [slot_name, ...]}.
     """
     if not _STATE_FILE.exists():
         return {}
@@ -200,11 +256,11 @@ def _load_state(today: date) -> Dict[str, List[str]]:
     sends = data.get("sends")
     if not isinstance(sends, dict):
         return {}
-    today_key = today.isoformat()
-    slots = sends.get(today_key)
+    key = band_date.isoformat()
+    slots = sends.get(key)
     if not isinstance(slots, list):
         return {}
-    return {today_key: [s for s in slots if isinstance(s, str)]}
+    return {key: [s for s in slots if isinstance(s, str)]}
 
 
 def _save_state(sends: Dict[str, List[str]]) -> None:
@@ -223,14 +279,14 @@ def _save_state(sends: Dict[str, List[str]]) -> None:
     os.replace(tmp, _STATE_FILE)  # atomic on the same filesystem
 
 
-def _already_sent(sends: Dict[str, List[str]], today: date, slot_name: str) -> bool:
-    """Return True if ``slot_name`` was already recorded for ``today``."""
-    return slot_name in sends.get(today.isoformat(), [])
+def _already_sent(sends: Dict[str, List[str]], band_date: date, slot_name: str) -> bool:
+    """Return True if ``slot_name`` was already recorded for ``band_date``."""
+    return slot_name in sends.get(band_date.isoformat(), [])
 
 
-def _record_send(sends: Dict[str, List[str]], today: date, slot_name: str) -> None:
-    """Mark ``slot_name`` as sent for ``today`` in the in-memory mapping."""
-    key = today.isoformat()
+def _record_send(sends: Dict[str, List[str]], band_date: date, slot_name: str) -> None:
+    """Mark ``slot_name`` as sent for ``band_date`` in the in-memory mapping."""
+    key = band_date.isoformat()
     day_slots = sends.setdefault(key, [])
     if slot_name not in day_slots:
         day_slots.append(slot_name)
@@ -281,15 +337,16 @@ def main() -> int:
     args = parser.parse_args()
 
     now = datetime.now()
-    today = now.date()
-    sends = _load_state(today)
+    slot = _current_slot(now)
+    band_date = _band_date(now, slot)
+    sends = _load_state(band_date)
 
     if args.status:
         print(f"Now:        {now.isoformat(timespec='seconds')}")
-        slot = _current_slot(now)
-        print(f"Band now:   {slot.name if slot else '(none)'}")
+        print(f"Band now:   {slot.name}")
+        print(f"Band date:  {band_date.isoformat()}")
         print(f"State file: {_STATE_FILE}")
-        print(f"Sent today: {sends.get(today.isoformat(), [])}")
+        print(f"Sent (band date): {sends.get(band_date.isoformat(), [])}")
         return 0
 
     # Decide whether a send is due.
@@ -297,16 +354,10 @@ def main() -> int:
         slot_name = "forced"
         due = True
     else:
-        slot = _current_slot(now)
-        if slot is None:
-            # Should not happen: the bands cover the whole day. Defensive only.
-            if args.dry_run:
-                print("No band matched the current time; nothing to do.")
-            return 0
         slot_name = slot.name
-        if _already_sent(sends, today, slot_name):
+        if _already_sent(sends, band_date, slot_name):
             if args.dry_run:
-                print(f"Band '{slot_name}' already sent today; nothing to do.")
+                print(f"Band '{slot_name}' already sent for band date {band_date.isoformat()}; nothing to do.")
             return 0
         due = True
 
@@ -343,7 +394,7 @@ def main() -> int:
     # Success: record the marker (skipped for --force so a manual send never
     # consumes a scheduled slot).
     if not args.force:
-        _record_send(sends, today, slot_name)
+        _record_send(sends, band_date, slot_name)
         _save_state(sends)
 
     sys.stdout.write(proc.stdout)

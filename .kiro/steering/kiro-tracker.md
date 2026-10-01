@@ -32,14 +32,18 @@ mano.
 2. **Dispatcher schedulato** (`scripts/send_usage_scheduled.py`) — invocato in
    background dal widget ad ogni tick (60s), decide da solo se è ora di mandare
    uno snapshot. La giornata è divisa in **tre fasce contigue** delimitate dai
-   cardini 12:00 e 18:00 — mattina (00:00–11:59), pomeriggio (12:00–17:59), sera
-   (18:00–23:59) — e manda **una volta per fascia**, al primo tick utile dentro
-   la fascia (quindi al mattino parte all'ora in cui accendi il Mac, non alle
-   09:00 spaccate). Nessun buco morto: ogni momento del giorno cade in una
-   fascia. Usa un file di stato marker in
+   cardini 07:00, 12:00 e 18:00 — notte (18:00–06:59, scavalca la mezzanotte),
+   mattina (07:00–11:59), pomeriggio (12:00–17:59) — e manda **una volta per
+   fascia**, al primo tick utile dentro la fascia (quindi parte all'ora in cui
+   accendi il Mac, non su orari spaccati). Nessun buco morto: ogni momento del
+   giorno cade in una fascia. La fascia **notte** scavalca la mezzanotte ed è
+   indicizzata per *band date* (la data in cui è iniziata, alle 18:00): le ore
+   00:00–06:59 appartengono alla notte iniziata il giorno prima, così le due
+   metà (18:00–23:59 e 00:00–06:59) condividono un unico marker e non si manda
+   due volte a cavallo di mezzanotte. Usa un file di stato marker in
    `~/.cache/kiro-tracker/send_state.json` per l'idempotenza (una sola volta per
-   fascia al giorno). Il file tiene **solo la giornata odierna**: ogni lettura
-   scarta le entry dei giorni passati, così non cresce mai.
+   fascia per band date). Il file tiene **solo la band date corrente**: ogni
+   lettura scarta le altre date, così non cresce mai.
 3. **File di conf gitignorato** (`scripts/swiftbar/tracker.conf`) — contiene
    `KIRO_TRACKER_API` (endpoint) e `KIRO_TRACKER_KEY` (API key). **Non è
    tracciato da git** (vedi `.gitignore`). Template versionato:

@@ -107,6 +107,7 @@ tests/
 │   ├── test_streaming_core.py      # Shared streaming logic tests (first-token retry, initial_response parameter)
 │   ├── test_streaming_openai.py    # OpenAI streaming response tests (truncation detection, finish_reason priority, initial_response reuse)
 │   ├── test_sync_claude_models.py  # Dynamic catalog sync CLI and fallback-source tests
+│   ├── test_send_usage_scheduled.py # kiro-tracker dispatcher band scheduling (night-wraps-midnight, band-date idempotency)
 │   ├── test_setup_script.py        # setup.sh model-sync integration regressions
 │   ├── test_thinking_parser.py     # ThinkingParser tests (FSM for thinking blocks)
 │   ├── test_tokenizer.py           # Tokenizer tests (tiktoken)
