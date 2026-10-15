@@ -20,7 +20,7 @@ mano.
 > Un'installazione non è completa finché lo userId dell'utente non è mappato a
 > un nome. **Non chiudere la procedura, non dire "fatto/installato", e non
 > lasciare andare l'utente** finché non hai eseguito il `PUT /mapping` con
-> successo e verificato che risulti in `GET /mapping`. Senza mapping l'utente
+> successo (risposta `200`). Senza mapping l'utente
 > compare anonimo nella dashboard: è considerato un'installazione fallita, non
 > parziale. Se manca il nome, **chiedilo prima di concludere** (vedi Step 5).
 
@@ -190,31 +190,23 @@ solo dalla risposta `GetUsageLimits` e lo manda nel campo `userId`.
 2. **Chiedi all'utente con che nome vuole comparire** se non lo conosci già.
    Non inventare il nome e non dedurlo dallo userId o dall'email: chiedi
    esplicitamente "con che nome vuoi comparire nella dashboard?".
-3. **Gestisci l'omonimia.** Prima del PUT, leggi i mapping esistenti
-   (`GET /mapping`, vedi sotto). Se il nome scelto è già usato da un altro
-   userId, **fermati e chiedi all'utente un nome distintivo** (es. "Giovanni B.",
-   "Giovanni — Marketing"), così due persone omonime restano distinguibili nella
-   dashboard. Non sovrascrivere silenziosamente né duplicare un nome già preso.
-4. **Fai il PUT** con lo userId e il nome concordato.
+3. **Fai il PUT** con lo userId e il nome concordato. La key condivisa è
+   **solo in scrittura**: non può leggere i mapping né i consumi (le letture
+   rispondono `403`, sono riservate alla dashboard).
+4. **Gestisci l'omonimia.** Se il nome è già usato da un altro userId il PUT
+   risponde **`409`**: **fermati e chiedi all'utente un nome distintivo** (es.
+   "Giovanni B.", "Giovanni — Marketing") e ripeti il PUT. Un `200` con
+   `userId` e `displayName` nel body conferma la registrazione.
 
 ```bash
 ACCT=<shard>.1password.com   # es. sfsrl.1password.com
 API=$(op read "op://Shared/kiro-tracker API key/endpoint" --account "$ACCT")
 KEY=$(op read "op://Shared/kiro-tracker API key/credential" --account "$ACCT")
 
-# 3. controlla i nomi già usati (per l'omonimia)
-curl -s "$API/mapping" -H "x-api-key: $KEY" | python3 -m json.tool
-
-# 4. registra il mapping con il nome concordato con l'utente
-curl -s -X PUT "$API/mapping" \
+# registra il mapping: HTTP 200 = registrato, 409 = nome già usato da un altro userId
+curl -s -w '\nHTTP %{http_code}\n' -X PUT "$API/mapping" \
   -H "x-api-key: $KEY" -H "content-type: application/json" \
   -d '{"userId":"<userId-utente>","displayName":"<Nome concordato>"}'
-```
-
-Poi verifica che il nuovo mapping risulti nell'elenco:
-
-```bash
-curl -s "$API/mapping" -H "x-api-key: $KEY" | python3 -m json.tool
 ```
 
 Nota per "vedere anche gli altri": la dashboard mostra la riga di consumo di
@@ -261,16 +253,18 @@ open "swiftbar://refreshallplugins"
   l'account giusto con `op account list`.
 - **Il mapping del nome (Step 5) è un gate di chiusura obbligatorio.** Non
   considerare l'installazione completa, non dire "fatto"/"installato" e non
-  congedare l'utente finché non hai eseguito il `PUT /mapping` con successo e
-  verificato che il nome risulti in `GET /mapping`. Un'installazione senza
+  congedare l'utente finché il `PUT /mapping` non ha risposto `200` con lo
+  userId e il nome concordati. Un'installazione senza
   mapping è fallita, non parziale. Se non conosci il nome, chiedilo e attendi la
   risposta prima di concludere: non saltare questo passo per "finire prima".
 - **Il PUT del mapping lo fai tu, non l'utente.** Se non conosci il nome,
   **chiedilo esplicitamente** ("con che nome vuoi comparire nella dashboard?");
-  non inventarlo né ricavarlo da userId/email. Prima del PUT controlla i mapping
-  esistenti (`GET /mapping`): in caso di **omonimia** con un nome già assegnato
-  a un altro userId, fermati e chiedi all'utente un nome distintivo, non
-  sovrascrivere né duplicare.
+  non inventarlo né ricavarlo da userId/email. Se il PUT risponde `409`
+  (**omonimia** con un nome già assegnato a un altro userId), fermati e chiedi
+  all'utente un nome distintivo, poi ripeti il PUT.
+- **La key condivisa è solo in scrittura** (`POST /usage`, `PUT /mapping`).
+  Non usarla per leggere consumi o mapping: risponde `403`. Le letture sono
+  riservate alla dashboard (key nel vault Admin).
 - **La chiave utente è lo userId personale IAM Identity Center, non il profile
   ARN.** L'ARN è della subscription org (uguale per tutti), lo userId distingue
   le persone. Il client lo estrae da `GetUsageLimits`; il mapping usa `userId`.
