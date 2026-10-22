@@ -231,7 +231,7 @@ async def stream_kiro_to_openai_internal(
                 
                 # INTERCEPT web_search tool calls (Path B - MCP emulation)
                 if tool_name == "web_search":
-                    from kiro.mcp_tools import call_kiro_mcp_api, generate_search_summary
+                    from kiro.mcp_tools import call_kiro_mcp_api, generate_search_error_summary, generate_search_summary
                     
                     logger.info("Intercepted web_search tool call (Path B - MCP emulation)")
                     
@@ -254,43 +254,44 @@ async def stream_kiro_to_openai_internal(
                         # Call MCP API
                         mcp_tool_use_id, results = await call_kiro_mcp_api(query, auth_manager)
                         
+                        # Never fall through to a plain tool call: the client did not
+                        # declare web_search, so it cannot execute it.
                         if results is None:
-                            logger.error("MCP API call failed for web_search")
-                            # Continue with normal tool_use processing (will show error to user)
+                            logger.error("MCP API call failed for web_search, returning error summary")
+                            summary = generate_search_error_summary(query)
                         else:
-                            # Emit summary as content chunks (OpenAI format)
                             summary = generate_search_summary(query, results)
+                        
+                        # Emit summary as content chunks (OpenAI format)
+                        chunk_size = 100
+                        for i in range(0, len(summary), chunk_size):
+                            content_chunk = summary[i:i + chunk_size]
                             
-                            # Send content chunks
-                            chunk_size = 100
-                            for i in range(0, len(summary), chunk_size):
-                                content_chunk = summary[i:i + chunk_size]
-                                
-                                delta = {"content": content_chunk}
-                                if first_chunk:
-                                    delta["role"] = "assistant"
-                                    first_chunk = False
-                                
-                                openai_chunk = {
-                                    "id": completion_id,
-                                    "object": "chat.completion.chunk",
-                                    "created": created_time,
-                                    "model": model,
-                                    "choices": [{"index": 0, "delta": delta, "finish_reason": None}]
-                                }
-                                
-                                chunk_text = f"data: {json.dumps(openai_chunk, ensure_ascii=False)}\n\n"
-                                
-                                if debug_logger:
-                                    debug_logger.log_modified_chunk(chunk_text.encode('utf-8'))
-                                
-                                yield chunk_text
+                            delta = {"content": content_chunk}
+                            if first_chunk:
+                                delta["role"] = "assistant"
+                                first_chunk = False
                             
-                            # Accumulate for token counting
-                            full_content += summary
+                            openai_chunk = {
+                                "id": completion_id,
+                                "object": "chat.completion.chunk",
+                                "created": created_time,
+                                "model": model,
+                                "choices": [{"index": 0, "delta": delta, "finish_reason": None}]
+                            }
                             
-                            # Skip normal tool_use processing
-                            continue
+                            chunk_text = f"data: {json.dumps(openai_chunk, ensure_ascii=False)}\n\n"
+                            
+                            if debug_logger:
+                                debug_logger.log_modified_chunk(chunk_text.encode('utf-8'))
+                            
+                            yield chunk_text
+                        
+                        # Accumulate for token counting
+                        full_content += summary
+                        
+                        # Skip normal tool_use processing
+                        continue
                 
                 # Collect the client-facing copy, preserving the parser event unchanged.
                 tool_calls_from_stream.append(tool)

@@ -54,7 +54,7 @@ from kiro.http_client import KiroHttpClient
 from kiro.utils import generate_conversation_id
 from kiro.tokenizer import estimate_request_tokens
 from kiro.config import WEB_SEARCH_ENABLED
-from kiro.mcp_tools import handle_native_web_search
+from kiro.mcp_tools import client_has_web_search, handle_native_web_search
 
 # Import debug_logger
 try:
@@ -257,11 +257,11 @@ async def messages(
         if request_data.tools is None:
             request_data.tools = []
         
-        # Check if web_search already exists (by name)
-        has_ws = any(
-            getattr(tool, "name", "") == "web_search"
-            for tool in request_data.tools
-        )
+        tool_names = [getattr(tool, "name", "") for tool in request_data.tools]
+        
+        # Skip if web_search already exists, or the client brings its own search
+        # tool (e.g. Claude Code's deferred WebSearch, loaded via ToolSearch)
+        has_ws = "web_search" in tool_names or client_has_web_search(tool_names)
         
         if not has_ws:
             from kiro.models_anthropic import AnthropicTool

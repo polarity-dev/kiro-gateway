@@ -379,7 +379,7 @@ async def stream_kiro_to_anthropic(
                 
                 # INTERCEPT web_search tool calls (Path B - MCP emulation)
                 if tool_name == "web_search":
-                    from kiro.mcp_tools import call_kiro_mcp_api, generate_search_summary
+                    from kiro.mcp_tools import call_kiro_mcp_api, build_anthropic_web_search_blocks
                     
                     logger.info("Intercepted web_search tool call (Path B - MCP emulation)")
                     
@@ -400,98 +400,56 @@ async def stream_kiro_to_anthropic(
                     
                     # Call MCP API
                     mcp_tool_use_id, results = await call_kiro_mcp_api(query, auth_manager)
-                    
                     if results is None:
-                        logger.error("MCP API call failed for web_search")
-                        # Continue with normal tool_use processing (will show error to user)
-                    else:
-                        # Emit server_tool_use + web_search_tool_result + text summary
-                        # (full SSE sequence as in mcp_tools.py)
-                        
-                        # Event: content_block_start (server_tool_use)
-                        yield format_sse_event("content_block_start", {
-                            "type": "content_block_start",
-                            "index": current_block_index,
-                            "content_block": {
-                                "id": mcp_tool_use_id,
-                                "type": "server_tool_use",
-                                "name": "web_search",
-                                "input": {}
-                            }
-                        })
-                        
-                        # Event: content_block_delta (input_json_delta)
-                        yield format_sse_event("content_block_delta", {
-                            "type": "content_block_delta",
-                            "index": current_block_index,
-                            "delta": {
-                                "type": "input_json_delta",
-                                "partial_json": json.dumps({"query": query})
-                            }
-                        })
-                        
-                        # Event: content_block_stop (server_tool_use)
-                        yield format_sse_event("content_block_stop", {
-                            "type": "content_block_stop",
-                            "index": current_block_index
-                        })
-                        current_block_index += 1
-                        
-                        # Event: content_block_start (web_search_tool_result)
-                        search_content = []
-                        for r in results.get("results", []):
-                            search_content.append({
-                                "type": "web_search_result",
-                                "title": r.get("title", ""),
-                                "url": r.get("url", ""),
-                                "encrypted_content": r.get("snippet", ""),
-                                "page_age": None
+                        logger.error("MCP API call failed for web_search, returning error result")
+                    
+                    # Emit server_tool_use + web_search_tool_result + text summary.
+                    # Never fall through to a plain tool_use: the client did not
+                    # declare web_search, so it cannot execute it.
+                    for block in build_anthropic_web_search_blocks(query, mcp_tool_use_id, results):
+                        if block["type"] == "server_tool_use":
+                            yield format_sse_event("content_block_start", {
+                                "type": "content_block_start",
+                                "index": current_block_index,
+                                "content_block": {**block, "input": {}}
                             })
-                        
-                        yield format_sse_event("content_block_start", {
-                            "type": "content_block_start",
-                            "index": current_block_index,
-                            "content_block": {
-                                "type": "web_search_tool_result",
-                                "tool_use_id": mcp_tool_use_id,
-                                "content": search_content
-                            }
-                        })
-                        
-                        # Event: content_block_stop (web_search_tool_result)
-                        yield format_sse_event("content_block_stop", {
-                            "type": "content_block_stop",
-                            "index": current_block_index
-                        })
-                        current_block_index += 1
-                        
-                        # Event: content_block_start (text)
-                        yield format_sse_event("content_block_start", {
-                            "type": "content_block_start",
-                            "index": current_block_index,
-                            "content_block": {"type": "text", "text": ""}
-                        })
-                        
-                        # Events: content_block_delta (text_delta) - stream summary
-                        summary = generate_search_summary(query, results)
-                        chunk_size = 100
-                        for i in range(0, len(summary), chunk_size):
-                            chunk = summary[i:i + chunk_size]
                             yield format_sse_event("content_block_delta", {
                                 "type": "content_block_delta",
                                 "index": current_block_index,
-                                "delta": {"type": "text_delta", "text": chunk}
+                                "delta": {
+                                    "type": "input_json_delta",
+                                    "partial_json": json.dumps(block["input"])
+                                }
+                            })
+                        elif block["type"] == "text":
+                            yield format_sse_event("content_block_start", {
+                                "type": "content_block_start",
+                                "index": current_block_index,
+                                "content_block": {"type": "text", "text": ""}
+                            })
+                            # Stream summary in chunks
+                            chunk_size = 100
+                            for i in range(0, len(block["text"]), chunk_size):
+                                yield format_sse_event("content_block_delta", {
+                                    "type": "content_block_delta",
+                                    "index": current_block_index,
+                                    "delta": {"type": "text_delta", "text": block["text"][i:i + chunk_size]}
+                                })
+                        else:
+                            yield format_sse_event("content_block_start", {
+                                "type": "content_block_start",
+                                "index": current_block_index,
+                                "content_block": block
                             })
                         
-                        # Event: content_block_stop (text)
                         yield format_sse_event("content_block_stop", {
                             "type": "content_block_stop",
                             "index": current_block_index
                         })
                         current_block_index += 1
-                        
-                        # Skip normal tool_use processing
-                        continue
+                    
+                    # Skip normal tool_use processing
+                    continue
                 
                 # Check if this tool was truncated
                 if tool.get('_truncation_detected'):
@@ -824,6 +782,7 @@ async def collect_anthropic_response(
         })
     
     # Add tool use blocks
+    tool_use_count = 0
     for tc in result.tool_calls:
         tool_id = tc.get("id") or f"toolu_{uuid.uuid4().hex[:24]}"
         tool_name = tool_name_mapping.to_original(
@@ -837,6 +796,31 @@ async def collect_anthropic_response(
             except json.JSONDecodeError:
                 tool_input = {}
         
+        # ==============================================================================
+        # WebSearch Support - Path B: MCP Tool Emulation (Non-Streaming Interception)
+        # ==============================================================================
+        
+        # The client did not declare web_search, so it must never see it as tool_use
+        if tool_name == "web_search":
+            from kiro.mcp_tools import call_kiro_mcp_api, build_anthropic_web_search_blocks
+            
+            logger.info("Intercepted web_search tool call (Path B - MCP emulation, non-streaming)")
+            
+            query = tool_input.get("query", "") if isinstance(tool_input, dict) else ""
+            if not query:
+                logger.warning("web_search called without query, skipping MCP call")
+                continue
+            
+            mcp_tool_use_id, results = await call_kiro_mcp_api(query, auth_manager)
+            if results is None:
+                logger.error("MCP API call failed for web_search, returning error result")
+            
+            search_blocks = build_anthropic_web_search_blocks(query, mcp_tool_use_id, results)
+            content_blocks.extend(search_blocks)
+            text_content += search_blocks[-1]["text"]
+            continue
+        
+        tool_use_count += 1
         content_blocks.append({
             "type": "tool_use",
             "id": tool_id,
@@ -875,7 +859,7 @@ async def collect_anthropic_response(
     # Determine stop reason (truncation has highest priority)
     if content_was_truncated:
         stop_reason = "max_tokens"
-    elif result.tool_calls:
+    elif tool_use_count:
         stop_reason = "tool_use"
     else:
         stop_reason = "end_turn"
@@ -883,7 +867,7 @@ async def collect_anthropic_response(
     logger.debug(
         f"[Anthropic Non-Streaming] Completed: "
         f"input_tokens={input_tokens}, output_tokens={output_tokens}, "
-        f"tool_calls={len(result.tool_calls)}, stop_reason={stop_reason}"
+        f"tool_calls={tool_use_count}, stop_reason={stop_reason}"
     )
     
     usage_payload: Dict[str, Any] = {

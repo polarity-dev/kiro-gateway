@@ -394,6 +394,18 @@ def mock_httpx_response():
 # Global Network Blocking
 # =============================================================================
 
+@pytest.fixture(autouse=True)
+def isolate_from_local_api_region(monkeypatch):
+    """
+    Removes KIRO_API_REGION loaded from the developer's local .env.
+    
+    kiro.config calls load_dotenv() at import, and KiroAuthManager reads
+    KIRO_API_REGION at runtime, so a local override would silently replace the
+    region every test expects. Tests that need it set it via monkeypatch.
+    """
+    monkeypatch.delenv("KIRO_API_REGION", raising=False)
+
+
 @pytest.fixture(scope="session", autouse=True)
 def block_all_network_calls():
     """

@@ -34,7 +34,7 @@ import uuid
 import random
 import string
 from datetime import datetime
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Iterable, List, Optional, Tuple
 
 import httpx
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -68,6 +68,33 @@ def generate_random_id(length: int) -> str:
         'aBcD1234567890XyZ12345'
     """
     return ''.join(random.choices(string.ascii_letters + string.digits, k=length))
+
+
+# ==================================================================================================
+# Client Capability Detection
+# ==================================================================================================
+
+# Client-side tools that make the auto-injected web_search (Path B) redundant.
+# Claude Code ships WebSearch as a deferred tool: it is absent from `tools` until
+# loaded, and only ToolSearch (the deferred-tool loader) is declared up front.
+CLIENT_WEB_SEARCH_TOOL_NAMES = frozenset({"WebSearch", "ToolSearch"})
+
+
+def client_has_web_search(tool_names: Iterable[Optional[str]]) -> bool:
+    """
+    Check whether the client already provides its own web search tool.
+    
+    When it does, injecting our web_search makes the model pick it over the
+    client's tool, so search results end up dumped into the reply instead of
+    flowing through the client's own tool loop.
+    
+    Args:
+        tool_names: Names of the tools declared in the request
+    
+    Returns:
+        True if the client declares a web search tool (directly or deferred)
+    """
+    return any(name in CLIENT_WEB_SEARCH_TOOL_NAMES for name in tool_names if name)
 
 
 # ==================================================================================================
@@ -288,6 +315,81 @@ def generate_search_summary(query: str, results: Dict) -> str:
     summary += "</web_search>\n"
     
     return summary
+
+
+def generate_search_error_summary(query: str) -> str:
+    """
+    Generate summary text for a failed web search, wrapped in XML tags.
+    
+    Args:
+        query: Original search query
+    
+    Returns:
+        Formatted failure notice the model can react to
+    """
+    return (
+        f'\n<web_search>\nSearch for "{query}" failed: '
+        f"the web search service is currently unavailable.\n</web_search>\n"
+    )
+
+
+def build_anthropic_web_search_blocks(
+    query: str,
+    tool_use_id: Optional[str],
+    results: Optional[Dict]
+) -> List[Dict[str, Any]]:
+    """
+    Build Anthropic content blocks for one intercepted web_search call (Path B).
+    
+    A failed search is reported as a web_search_tool_result error instead of a
+    plain tool_use: the client never declared web_search, so it cannot run it.
+    
+    Args:
+        query: Search query
+        tool_use_id: Server tool use ID from the MCP call (None on failure)
+        results: Parsed MCP results, or None if the MCP call failed
+    
+    Returns:
+        [server_tool_use, web_search_tool_result, text] content blocks
+    """
+    tool_use_id = tool_use_id or f"srvtoolu_{uuid.uuid4().hex[:32]}"
+    
+    if results is None:
+        result_content: Any = {
+            "type": "web_search_tool_result_error",
+            "error_code": "unavailable"
+        }
+        summary = generate_search_error_summary(query)
+    else:
+        result_content = [
+            {
+                "type": "web_search_result",
+                "title": r.get("title", ""),
+                "url": r.get("url", ""),
+                "encrypted_content": r.get("snippet", ""),
+                "page_age": None
+            }
+            for r in results.get("results", [])
+        ]
+        summary = generate_search_summary(query, results)
+    
+    return [
+        {
+            "type": "server_tool_use",
+            "id": tool_use_id,
+            "name": "web_search",
+            "input": {"query": query}
+        },
+        {
+            "type": "web_search_tool_result",
+            "tool_use_id": tool_use_id,
+            "content": result_content
+        },
+        {
+            "type": "text",
+            "text": summary
+        }
+    ]
 
 
 # ==================================================================================================

@@ -2000,3 +2000,50 @@ class TestChatCompletionsLegacyMode:
         
         assert failover_enabled is False
         print("✅ Legacy mode correctly skips failover loop")
+
+class TestWebSearchInjectionSkippedForClientSearchOpenAI:
+    """Tests that web_search is not injected when the client has its own search tool (OpenAI)."""
+    
+    def _captured_tool_names(self, test_client, valid_proxy_api_key, tools):
+        captured = {}
+        
+        def capture(request_data, *args, **kwargs):
+            captured["tools"] = [
+                (t.function.name if t.function else t.name) for t in request_data.tools or []
+            ]
+            raise RuntimeError("stop after capture")
+        
+        with patch('kiro.routes_openai.build_kiro_payload_result', side_effect=capture):
+            try:
+                test_client.post(
+                    "/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {valid_proxy_api_key}"},
+                    json={
+                        "model": "claude-sonnet-4-5",
+                        "messages": [{"role": "user", "content": "Hello"}],
+                        "tools": tools,
+                    }
+                )
+            except RuntimeError:
+                pass
+        return captured["tools"]
+    
+    def test_not_injected_with_client_websearch(self, test_client, valid_proxy_api_key):
+        """
+        What it does: Skips injection when the client declares WebSearch.
+        Goal: Parity with the Anthropic surface.
+        """
+        tools = [{"type": "function", "function": {"name": "WebSearch", "parameters": {"type": "object"}}}]
+        names = self._captured_tool_names(test_client, valid_proxy_api_key, tools)
+        print(f"Tools sent to Kiro: {names}")
+        assert names == ["WebSearch"]
+    
+    def test_injected_without_client_search(self, test_client, valid_proxy_api_key):
+        """
+        What it does: Still injects web_search for clients without a search tool.
+        Goal: Keep Path B for generic clients.
+        """
+        tools = [{"type": "function", "function": {"name": "get_weather", "parameters": {"type": "object"}}}]
+        names = self._captured_tool_names(test_client, valid_proxy_api_key, tools)
+        print(f"Tools sent to Kiro: {names}")
+        assert names == ["get_weather", "web_search"]
