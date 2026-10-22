@@ -52,7 +52,7 @@ from kiro.streaming_openai import stream_kiro_to_openai, collect_stream_response
 from kiro.http_client import KiroHttpClient
 from kiro.utils import generate_conversation_id
 from kiro.config import WEB_SEARCH_ENABLED
-from kiro.mcp_tools import handle_native_web_search
+from kiro.mcp_tools import client_has_web_search, handle_native_web_search
 
 # Import debug_logger
 try:
@@ -248,12 +248,14 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
         if request_data.tools is None:
             request_data.tools = []
         
-        # Check if web_search already exists
-        has_ws = any(
-            getattr(tool, "type", None) == "function" and
-            getattr(getattr(tool, "function", None), "name", None) == "web_search"
+        # Function name (standard format) or flat name (Cursor-style format)
+        tool_names = [
+            getattr(getattr(tool, "function", None), "name", None) or getattr(tool, "name", None)
             for tool in request_data.tools
-        )
+        ]
+        
+        # Skip if web_search already exists, or the client brings its own search tool
+        has_ws = "web_search" in tool_names or client_has_web_search(tool_names)
         
         if not has_ws:
             from kiro.models_openai import Tool, ToolFunction

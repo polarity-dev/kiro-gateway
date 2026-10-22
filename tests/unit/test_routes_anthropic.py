@@ -2519,3 +2519,52 @@ class TestCountTokensEndpoint:
         assert data["input_tokens"] > 0
         
         print("✅ max_tokens is NOT required for count_tokens")
+
+class TestWebSearchInjectionSkippedForClientSearch:
+    """Tests that web_search is not injected when the client has its own search tool."""
+    
+    def _captured_tool_names(self, test_client, valid_proxy_api_key, tools):
+        captured = {}
+        
+        def capture(request_data, *args, **kwargs):
+            captured["tools"] = [t.name for t in request_data.tools or []]
+            raise RuntimeError("stop after capture")
+        
+        with patch('kiro.routes_anthropic.anthropic_to_kiro_result', side_effect=capture):
+            try:
+                test_client.post(
+                    "/v1/messages",
+                    headers={"x-api-key": valid_proxy_api_key},
+                    json={
+                        "model": "claude-sonnet-4-5",
+                        "max_tokens": 100,
+                        "messages": [{"role": "user", "content": "Hello"}],
+                        "tools": tools,
+                    }
+                )
+            except RuntimeError:
+                pass
+        return captured["tools"]
+    
+    def test_not_injected_with_deferred_websearch(self, test_client, valid_proxy_api_key):
+        """
+        What it does: Skips injection when ToolSearch is declared.
+        Goal: Claude Code's deferred WebSearch must win over the injected web_search.
+        """
+        tools = [
+            {"name": "ToolSearch", "description": "load tools", "input_schema": {"type": "object"}},
+            {"name": "DeferredToolPlaceholder", "description": "x", "input_schema": {"type": "object"}, "defer_loading": True},
+        ]
+        names = self._captured_tool_names(test_client, valid_proxy_api_key, tools)
+        print(f"Tools sent to Kiro: {names}")
+        assert "web_search" not in names
+    
+    def test_injected_without_client_search(self, test_client, valid_proxy_api_key):
+        """
+        What it does: Still injects web_search for clients without a search tool.
+        Goal: Keep Path B for generic clients.
+        """
+        tools = [{"name": "get_weather", "description": "w", "input_schema": {"type": "object"}}]
+        names = self._captured_tool_names(test_client, valid_proxy_api_key, tools)
+        print(f"Tools sent to Kiro: {names}")
+        assert names == ["get_weather", "web_search"]

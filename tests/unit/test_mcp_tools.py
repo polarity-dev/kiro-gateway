@@ -666,3 +666,74 @@ class TestOpenAISSEEmulation:
         
         print("Checking for usage information...")
         assert any('"usage"' in chunk for chunk in chunks)
+
+
+# ==================================================================================================
+# Tests for client web search detection and block building
+# ==================================================================================================
+
+class TestClientHasWebSearch:
+    """Tests for client_has_web_search()."""
+    
+    def test_detects_deferred_websearch_via_toolsearch(self):
+        """
+        What it does: Treats ToolSearch as a client web search provider.
+        Goal: Claude Code declares WebSearch as deferred - only ToolSearch is in `tools`.
+        """
+        from kiro.mcp_tools import client_has_web_search
+        names = ["Bash", "Read", "ToolSearch", "DeferredToolPlaceholder"]
+        print(f"Checking: {names}")
+        assert client_has_web_search(names) is True
+    
+    def test_detects_explicit_websearch(self):
+        """
+        What it does: Detects a directly declared WebSearch tool.
+        Goal: Older clients declare WebSearch up front.
+        """
+        from kiro.mcp_tools import client_has_web_search
+        assert client_has_web_search(["Bash", "WebSearch"]) is True
+    
+    def test_no_search_tool(self):
+        """
+        What it does: Returns False when the client has no search tool.
+        Goal: Generic clients keep getting the injected web_search.
+        """
+        from kiro.mcp_tools import client_has_web_search
+        assert client_has_web_search(["get_weather", None, ""]) is False
+        assert client_has_web_search([]) is False
+
+
+class TestBuildAnthropicWebSearchBlocks:
+    """Tests for build_anthropic_web_search_blocks()."""
+    
+    def test_success_blocks(self):
+        """
+        What it does: Builds server_tool_use + result + text blocks.
+        Goal: Verify the success block layout.
+        """
+        from kiro.mcp_tools import build_anthropic_web_search_blocks
+        results = {"results": [{"title": "T", "url": "https://x.dev", "snippet": "S"}]}
+        blocks = build_anthropic_web_search_blocks("q", "srvtoolu_1", results)
+        print(f"Blocks: {blocks}")
+        
+        assert [b["type"] for b in blocks] == ["server_tool_use", "web_search_tool_result", "text"]
+        assert blocks[0]["id"] == "srvtoolu_1"
+        assert blocks[0]["input"] == {"query": "q"}
+        assert blocks[1]["tool_use_id"] == "srvtoolu_1"
+        assert blocks[1]["content"][0]["url"] == "https://x.dev"
+        assert "<web_search>" in blocks[2]["text"]
+    
+    def test_failure_blocks(self):
+        """
+        What it does: Reports an MCP failure as web_search_tool_result_error.
+        Goal: A failed search must never become a tool_use the client cannot run.
+        """
+        from kiro.mcp_tools import build_anthropic_web_search_blocks
+        blocks = build_anthropic_web_search_blocks("q", None, None)
+        print(f"Blocks: {blocks}")
+        
+        assert [b["type"] for b in blocks] == ["server_tool_use", "web_search_tool_result", "text"]
+        assert blocks[0]["id"].startswith("srvtoolu_")
+        assert blocks[1]["tool_use_id"] == blocks[0]["id"]
+        assert blocks[1]["content"]["type"] == "web_search_tool_result_error"
+        assert "failed" in blocks[2]["text"]

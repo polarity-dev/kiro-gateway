@@ -1667,3 +1667,104 @@ class TestStreamingAnthropicTruncationDetection:
         # Should detect truncation and set max_tokens
         assert result["stop_reason"] == "max_tokens"
         print("✓ collect_anthropic_response detects truncation correctly")
+
+
+# ==================================================================================================
+# Tests for web_search interception (Path B)
+# ==================================================================================================
+
+WEB_SEARCH_TOOL_USE = {
+    "id": "toolu_ws",
+    "function": {"name": "web_search", "arguments": '{"query": "kiro"}'}
+}
+
+
+class TestWebSearchInterceptionAnthropic:
+    """Tests for intercepted web_search calls in streaming and non-streaming paths."""
+    
+    @pytest.mark.asyncio
+    async def test_streaming_mcp_failure_never_emits_tool_use(self, mock_response, mock_model_cache, mock_auth_manager):
+        """
+        What it does: Emits an error result when the MCP call fails while streaming.
+        Goal: The client never declared web_search, so a tool_use for it fails
+              with "No such tool available".
+        """
+        print("Setup: Mock stream with web_search call, MCP failing...")
+        
+        async def mock_parse_kiro_stream(*args, **kwargs):
+            yield KiroEvent(type="tool_use", tool_use=WEB_SEARCH_TOOL_USE)
+        
+        events = []
+        with patch('kiro.streaming_anthropic.parse_kiro_stream', mock_parse_kiro_stream), \
+             patch('kiro.streaming_anthropic.parse_bracket_tool_calls', return_value=[]), \
+             patch('kiro.mcp_tools.call_kiro_mcp_api', AsyncMock(return_value=(None, None))):
+            async for event in stream_kiro_to_anthropic(
+                mock_response, "claude-sonnet-4", mock_model_cache, mock_auth_manager
+            ):
+                events.append(event)
+        
+        joined = "".join(events)
+        print(f"Events: {joined[:500]}")
+        
+        assert '"type": "tool_use"' not in joined
+        assert "web_search_tool_result_error" in joined
+        assert '"stop_reason": "end_turn"' in joined
+    
+    @pytest.mark.asyncio
+    async def test_non_streaming_intercepts_web_search(self, mock_response, mock_model_cache, mock_auth_manager):
+        """
+        What it does: Runs web_search via MCP in non-streaming mode.
+        Goal: Non-streaming used to pass web_search straight to the client as tool_use.
+        """
+        print("Setup: Non-streaming result with a web_search call and a real tool call...")
+        
+        mock_result = StreamResult(
+            content="Searching",
+            thinking_content="",
+            tool_calls=[
+                WEB_SEARCH_TOOL_USE,
+                {"id": "toolu_1", "function": {"name": "get_weather", "arguments": '{"city": "Rome"}'}},
+            ],
+            usage=None,
+            context_usage_percentage=5.0
+        )
+        mcp_results = {"results": [{"title": "Kiro", "url": "https://kiro.dev", "snippet": "IDE"}]}
+        
+        with patch('kiro.streaming_anthropic.collect_stream_to_result', return_value=mock_result), \
+             patch('kiro.mcp_tools.call_kiro_mcp_api', AsyncMock(return_value=("srvtoolu_1", mcp_results))) as mcp:
+            result = await collect_anthropic_response(
+                mock_response, "claude-sonnet-4", mock_model_cache, mock_auth_manager
+            )
+        
+        types = [b["type"] for b in result["content"]]
+        print(f"Block types: {types}")
+        
+        mcp.assert_awaited_once_with("kiro", mock_auth_manager)
+        assert types == ["text", "server_tool_use", "web_search_tool_result", "text", "tool_use"]
+        assert result["content"][-1]["name"] == "get_weather"
+        assert result["stop_reason"] == "tool_use"
+    
+    @pytest.mark.asyncio
+    async def test_non_streaming_web_search_only_ends_turn(self, mock_response, mock_model_cache, mock_auth_manager):
+        """
+        What it does: Uses end_turn when web_search was the only tool call.
+        Goal: stop_reason tool_use with no tool_use block would stall the client.
+        """
+        mock_result = StreamResult(
+            content="",
+            thinking_content="",
+            tool_calls=[WEB_SEARCH_TOOL_USE],
+            usage=None,
+            context_usage_percentage=5.0
+        )
+        
+        with patch('kiro.streaming_anthropic.collect_stream_to_result', return_value=mock_result), \
+             patch('kiro.mcp_tools.call_kiro_mcp_api', AsyncMock(return_value=(None, None))):
+            result = await collect_anthropic_response(
+                mock_response, "claude-sonnet-4", mock_model_cache, mock_auth_manager
+            )
+        
+        print(f"Result: {result}")
+        assert all(b["type"] != "tool_use" for b in result["content"])
+        assert result["content"][1]["content"]["type"] == "web_search_tool_result_error"
+        assert result["stop_reason"] == "end_turn"
