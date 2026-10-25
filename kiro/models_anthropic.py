@@ -171,6 +171,24 @@ class WebSearchToolResultContentBlock(BaseModel):
     model_config = {"extra": "allow"}
 
 
+class ToolAdditionContentBlock(BaseModel):
+    """
+    Tool added mid-conversation (Claude Code).
+
+    Claude Code sends it inside a user message when an MCP server connects after the
+    session started, e.g. after a change of working directory. `tool` carries
+    {"type": "tool_definition", "definition": {"name", "description", "input_schema"}}.
+    The block stays in the history, so rejecting it would break every later request
+    of the session with a 422. The converter adds the definition to the tools sent to
+    Kiro and drops the block from the text.
+    """
+
+    type: Literal["tool_addition"] = "tool_addition"
+    tool: Dict[str, Any] = Field(default_factory=dict)
+
+    model_config = {"extra": "allow"}
+
+
 # ==================================================================================================
 # Image Content Block Models
 # ==================================================================================================
@@ -231,6 +249,7 @@ ContentBlock = Union[
     ToolUseContentBlock,
     ToolResultContentBlock,
     ToolReferenceContentBlock,
+    ToolAdditionContentBlock,
     ServerToolUseContentBlock,
     WebSearchToolResultContentBlock,
 ]

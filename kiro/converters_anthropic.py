@@ -426,6 +426,71 @@ def extract_thinking_config_from_anthropic(request: AnthropicMessagesRequest) ->
     return ThinkingConfig(enabled=True, budget_tokens=None)
 
 
+def extract_tool_additions(messages: List[AnthropicMessage]) -> List[AnthropicTool]:
+    """
+    Collects the tools that Claude Code added mid-conversation (tool_addition blocks).
+
+    Definitions without a usable name are skipped: the block is only an announcement,
+    and a malformed one must not fail the request.
+
+    Args:
+        messages: Anthropic messages, in order
+
+    Returns:
+        Tool definitions in Anthropic format, in order of appearance
+    """
+    added = []
+    for msg in messages:
+        if not isinstance(msg.content, list):
+            continue
+        for block in msg.content:
+            if isinstance(block, dict):
+                block_type = block.get("type")
+                tool = block.get("tool")
+            else:
+                block_type = getattr(block, "type", None)
+                tool = getattr(block, "tool", None)
+            if block_type != "tool_addition" or not isinstance(tool, dict):
+                continue
+            definition = tool.get("definition")
+            if not isinstance(definition, dict):
+                continue
+            name = definition.get("name")
+            if not isinstance(name, str) or not name:
+                continue
+            input_schema = definition.get("input_schema")
+            added.append(
+                AnthropicTool(
+                    name=name,
+                    description=definition.get("description"),
+                    input_schema=input_schema if isinstance(input_schema, dict) else {"type": "object", "properties": {}},
+                )
+            )
+    return added
+
+
+def merge_tool_additions(
+    tools: Optional[List[AnthropicTool]], additions: List[AnthropicTool]
+) -> Optional[List[AnthropicTool]]:
+    """
+    Adds the tools announced in the conversation to the request tools.
+
+    A tool already in the request keeps its definition; of repeated additions the
+    first one counts.
+    """
+    if not additions:
+        return tools
+    merged = list(tools or [])
+    names = {tool.get("name") if isinstance(tool, dict) else tool.name for tool in merged}
+    for tool in additions:
+        if tool.name not in names:
+            merged.append(tool)
+            names.add(tool.name)
+    if len(merged) > len(tools or []):
+        logger.debug(f"Added {len(merged) - len(tools or [])} tools announced mid-conversation (tool_addition)")
+    return merged
+
+
 def anthropic_to_kiro_result(
     request: AnthropicMessagesRequest, conversation_id: str, profile_arn: str
 ) -> KiroPayloadResult:
@@ -459,8 +524,9 @@ def anthropic_to_kiro_result(
     ]
     unified_messages = convert_anthropic_messages(non_system_messages)
 
-    # Convert tools to unified format
-    unified_tools = convert_anthropic_tools(request.tools)
+    # Convert tools to unified format, with the tools added mid-conversation
+    tools = merge_tool_additions(request.tools, extract_tool_additions(request.messages))
+    unified_tools = convert_anthropic_tools(tools)
 
     # System prompt: combine the dedicated field + any system messages from array
     # (Claude Code sends system prompts as messages with role "system")
