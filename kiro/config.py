@@ -443,6 +443,11 @@ STATE_SAVE_INTERVAL_SECONDS: int = int(os.getenv("STATE_SAVE_INTERVAL_SECONDS", 
 # ==================================================================================================
 
 APP_VERSION: str = "2.4.dev.13"
+
+# Kiro IDE version advertised in User-Agent headers. Kiro rejects outdated
+# versions (403 FEATURE_NOT_SUPPORTED, e.g. on the MCP web_search endpoint),
+# so keep this in line with a currently supported Kiro IDE release.
+KIRO_IDE_VERSION: str = os.getenv("KIRO_IDE_VERSION", "1.4.121")
 APP_TITLE: str = "Kiro Gateway"
 APP_DESCRIPTION: str = "Proxy gateway for Kiro API (Amazon Q Developer / AWS CodeWhisperer). OpenAI and Anthropic compatible. Made by @jwadow"
 

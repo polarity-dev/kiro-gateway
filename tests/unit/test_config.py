@@ -819,3 +819,33 @@ class TestAccountSystemConfig:
         
         print(f"Comparing STATE_SAVE_INTERVAL_SECONDS: Expected 10, Got {config_module.STATE_SAVE_INTERVAL_SECONDS}")
         assert config_module.STATE_SAVE_INTERVAL_SECONDS == 10
+
+class TestKiroIdeVersionConfig:
+    """Tests for KIRO_IDE_VERSION configuration."""
+
+    def test_default_kiro_ide_version_is_supported_release(self):
+        """
+        What it does: Verifies the default advertised Kiro IDE version.
+        Purpose: Kiro rejects outdated versions (0.7.x) with 403 FEATURE_NOT_SUPPORTED.
+        """
+        import importlib
+        import kiro.config as config_module
+
+        env = {k: v for k, v in os.environ.items() if k != "KIRO_IDE_VERSION"}
+        with patch.dict(os.environ, env, clear=True):
+            importlib.reload(config_module)
+            assert config_module.KIRO_IDE_VERSION == "1.4.121"
+        importlib.reload(config_module)
+
+    def test_kiro_ide_version_from_environment(self):
+        """
+        What it does: Verifies KIRO_IDE_VERSION can be overridden via env.
+        Purpose: Allow bumping the version without a code change.
+        """
+        import importlib
+        import kiro.config as config_module
+
+        with patch.dict(os.environ, {"KIRO_IDE_VERSION": "9.9.9"}):
+            importlib.reload(config_module)
+            assert config_module.KIRO_IDE_VERSION == "9.9.9"
+        importlib.reload(config_module)
