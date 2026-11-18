@@ -428,10 +428,12 @@ def extract_thinking_config_from_anthropic(request: AnthropicMessagesRequest) ->
 
 def extract_tool_additions(messages: List[AnthropicMessage]) -> List[AnthropicTool]:
     """
-    Collects the tools that Claude Code added mid-conversation (tool_addition blocks).
+    Collects the tools that Claude Code added mid-conversation and are still available.
 
-    Definitions without a usable name are skipped: the block is only an announcement,
-    and a malformed one must not fail the request.
+    Blocks are applied in order: tool_addition adds a definition, tool_removal withdraws
+    it (a later tool_addition can add it back). Definitions without a usable name are
+    skipped: the blocks are only announcements, and a malformed one must not fail the
+    request.
 
     Args:
         messages: Anthropic messages, in order
@@ -439,7 +441,7 @@ def extract_tool_additions(messages: List[AnthropicMessage]) -> List[AnthropicTo
     Returns:
         Tool definitions in Anthropic format, in order of appearance
     """
-    added = []
+    added: Dict[str, AnthropicTool] = {}
     for msg in messages:
         if not isinstance(msg.content, list):
             continue
@@ -450,23 +452,28 @@ def extract_tool_additions(messages: List[AnthropicMessage]) -> List[AnthropicTo
             else:
                 block_type = getattr(block, "type", None)
                 tool = getattr(block, "tool", None)
-            if block_type != "tool_addition" or not isinstance(tool, dict):
+            if not isinstance(tool, dict):
+                continue
+            if block_type == "tool_removal":
+                name = tool.get("name")
+                if isinstance(name, str) and added.pop(name, None) is not None:
+                    logger.debug(f"Tool withdrawn mid-conversation (tool_removal): {name}")
+                continue
+            if block_type != "tool_addition":
                 continue
             definition = tool.get("definition")
             if not isinstance(definition, dict):
                 continue
             name = definition.get("name")
-            if not isinstance(name, str) or not name:
+            if not isinstance(name, str) or not name or name in added:
                 continue
             input_schema = definition.get("input_schema")
-            added.append(
-                AnthropicTool(
-                    name=name,
-                    description=definition.get("description"),
-                    input_schema=input_schema if isinstance(input_schema, dict) else {"type": "object", "properties": {}},
-                )
+            added[name] = AnthropicTool(
+                name=name,
+                description=definition.get("description"),
+                input_schema=input_schema if isinstance(input_schema, dict) else {"type": "object", "properties": {}},
             )
-    return added
+    return list(added.values())
 
 
 def merge_tool_additions(

@@ -189,6 +189,24 @@ class ToolAdditionContentBlock(BaseModel):
     model_config = {"extra": "allow"}
 
 
+class ToolRemovalContentBlock(BaseModel):
+    """
+    Tool removed mid-conversation (Claude Code).
+
+    Claude Code sends it inside a user message when an MCP server disconnects, e.g.
+    after a change of working directory. `tool` carries
+    {"type": "tool_reference", "name": ...}. Like tool_addition, the block stays in the
+    history, so rejecting it would break every later request of the session with a 422.
+    The converter withdraws a tool added earlier by tool_addition and drops the block
+    from the text.
+    """
+
+    type: Literal["tool_removal"] = "tool_removal"
+    tool: Dict[str, Any] = Field(default_factory=dict)
+
+    model_config = {"extra": "allow"}
+
+
 # ==================================================================================================
 # Image Content Block Models
 # ==================================================================================================
@@ -250,6 +268,7 @@ ContentBlock = Union[
     ToolResultContentBlock,
     ToolReferenceContentBlock,
     ToolAdditionContentBlock,
+    ToolRemovalContentBlock,
     ServerToolUseContentBlock,
     WebSearchToolResultContentBlock,
 ]
