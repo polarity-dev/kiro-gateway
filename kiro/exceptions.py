@@ -64,6 +64,92 @@ def sanitize_validation_errors(errors: List[Dict[str, Any]]) -> List[Dict[str, A
     return sanitized
 
 
+def _format_loc(loc) -> str:
+    """
+    Formats a Pydantic error location as a readable path, e.g. messages[100].content[1].
+
+    The leading "body" and the union descriptors Pydantic inserts
+    ("str", "list[union[...]]") are left out.
+    """
+    path = ""
+    for part in loc:
+        if isinstance(part, int):
+            path += f"[{part}]"
+        elif part == "body" and not path:
+            continue
+        elif part == "str" or "[" in part:
+            continue
+        else:
+            path += f".{part}" if path else part
+    return path or "body"
+
+
+def _union_member(loc: tuple):
+    """
+    Splits the location of an error inside a union of content block models.
+
+    Pydantic reports such errors at (..., field, "list[union[...]]", index, Member, ...).
+    Returns (block location, member name, rest of the location), or None when the
+    error is not inside such a union.
+    """
+    for i in range(len(loc) - 2):
+        if isinstance(loc[i], str) and loc[i].startswith("list[union[") and isinstance(loc[i + 1], int) and isinstance(loc[i + 2], str):
+            return loc[:i + 2], loc[i + 2], loc[i + 3:]
+    return None
+
+
+def summarize_validation_errors(errors: List[Dict[str, Any]]) -> List[str]:
+    """
+    Turns Pydantic validation errors into one readable line per problem.
+
+    A content block that fails validation makes Pydantic report errors for every
+    union member, and for the alternative string form of the field. That noise is
+    collapsed: a block whose type no member accepts becomes a single
+    "Unsupported content block type" line; a block of a known type keeps only the
+    errors of the member matching its type.
+
+    Args:
+        errors: Validation errors from Pydantic
+
+    Returns:
+        Readable error lines, in order of appearance
+    """
+    members: Dict[tuple, Dict[str, bool]] = {}  # block -> member -> type accepted
+    block_types: Dict[tuple, Any] = {}
+    for error in errors:
+        split = _union_member(tuple(error.get("loc", ())))
+        if split is None:
+            continue
+        block, member, rest = split
+        type_rejected = rest == ("type",) and error.get("type") == "literal_error"
+        accepted = members.setdefault(block, {})
+        accepted[member] = accepted.get(member, True) and not type_rejected
+        if type_rejected:
+            block_types.setdefault(block, error.get("input"))
+
+    # The field holding a failing block: its "str" alternative is union noise too
+    fields = {block[:-2] for block in members}
+
+    lines = []
+    reported = set()
+    for error in errors:
+        loc = tuple(error.get("loc", ()))
+        split = _union_member(loc)
+        if split is None:
+            if loc[:-1] in fields and loc[-1:] == ("str",):
+                continue
+            lines.append(f"{_format_loc(loc)}: {error.get('msg', 'invalid')}")
+            continue
+        block, member, rest = split
+        if any(members[block].values()):
+            if members[block][member]:
+                lines.append(f"{_format_loc(block + rest)}: {error.get('msg', 'invalid')}")
+        elif block not in reported:
+            reported.add(block)
+            lines.append(f"Unsupported content block type {block_types.get(block)!r} at {_format_loc(block)}")
+    return lines
+
+
 async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
     """
     Pydantic validation error handler.
@@ -85,7 +171,9 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     # Sanitize errors for JSON serialization
     sanitized_errors = sanitize_validation_errors(exc.errors())
     
-    logger.error(f"Validation error (422): {sanitized_errors}")
+    summary = summarize_validation_errors(sanitized_errors)
+    logger.error(f"Validation error (422): {'; '.join(summary) or sanitized_errors}")
+    logger.debug(f"Validation error details: {sanitized_errors}")
     # Log body at DEBUG level to avoid cluttering console with potentially large payloads
     # logger.debug(f"Request body: {body_str[:500]}...")
     
@@ -102,5 +190,5 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     
     return JSONResponse(
         status_code=422,
-        content={"detail": sanitized_errors, "body": body_str[:500]},
+        content={"message": "; ".join(summary), "detail": sanitized_errors, "body": body_str[:500]},
     )
