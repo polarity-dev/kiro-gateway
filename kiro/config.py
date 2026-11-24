@@ -311,10 +311,15 @@ def _warn_timeout_configuration():
 # with <thinking>...</thinking> blocks that we parse and convert to reasoning_content.
 # It works great, but it's a hack - hence "fake" reasoning.
 #
-# Default: true (enabled) - provides premium experience out of the box
-_FAKE_REASONING_RAW: str = os.getenv("FAKE_REASONING", "").lower()
-# Default is True - if env var is not set or empty, enable fake reasoning
-FAKE_REASONING_ENABLED: bool = _FAKE_REASONING_RAW not in ("false", "0", "no", "disabled", "off")
+# Default: false (disabled). Newer models (e.g. claude-opus-5.5) classify the
+# injected "wrap your reasoning in <thinking> tags" instruction as a reasoning
+# extraction attempt: Kiro then answers with stopReason=CONTENT_FILTERED
+# (category REASONING_EXTRACTION) and no content at all. Opt in explicitly
+# with FAKE_REASONING=true for models that still accept the injection.
+_FAKE_REASONING_RAW: str = os.getenv("FAKE_REASONING", "").strip().lower()
+FAKE_REASONING_TRUTHY_VALUES: tuple[str, ...] = ("true", "1", "yes", "enabled", "on")
+# Only an explicit truthy value enables fake reasoning; unset/empty/unknown disables it
+FAKE_REASONING_ENABLED: bool = _FAKE_REASONING_RAW in FAKE_REASONING_TRUTHY_VALUES
 
 # Maximum thinking length in tokens (default budget when client doesn't specify).
 # This value is injected into the request as <max_thinking_length>{value}</max_thinking_length>

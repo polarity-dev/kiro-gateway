@@ -849,3 +849,63 @@ class TestKiroIdeVersionConfig:
             importlib.reload(config_module)
             assert config_module.KIRO_IDE_VERSION == "9.9.9"
         importlib.reload(config_module)
+
+
+class TestFakeReasoningConfig:
+    """Tests for FAKE_REASONING (opt-in since Opus 5.5 refuses tag injection)."""
+
+    @staticmethod
+    def _reload_with(monkeypatch, value):
+        """
+        Reload kiro.config with FAKE_REASONING set (or unset) and no .env loading.
+
+        Args:
+            monkeypatch: pytest monkeypatch fixture
+            value: Raw env value, or None to unset
+
+        Returns:
+            Reloaded config module
+        """
+        if value is None:
+            monkeypatch.delenv("FAKE_REASONING", raising=False)
+        else:
+            monkeypatch.setenv("FAKE_REASONING", value)
+
+        import importlib
+        import kiro.config as config_module
+        # The developer's .env must not leak into the default-value assertion
+        with patch("dotenv.load_dotenv", return_value=False):
+            importlib.reload(config_module)
+        return config_module
+
+    def test_default_is_disabled(self, monkeypatch):
+        """
+        What it does: Verifies FAKE_REASONING is off when unset.
+        Purpose: Pulling the gateway must fix Opus 5.5 without editing .env.
+        """
+        config_module = self._reload_with(monkeypatch, None)
+
+        assert config_module.FAKE_REASONING_ENABLED is False
+
+    def test_empty_value_is_disabled(self, monkeypatch):
+        """
+        What it does: Verifies FAKE_REASONING="" is off.
+        Purpose: A blank line in .env must not opt in.
+        """
+        assert self._reload_with(monkeypatch, "").FAKE_REASONING_ENABLED is False
+
+    @pytest.mark.parametrize("value", ["true", "TRUE", "1", "yes", "on", "enabled", " True "])
+    def test_explicit_truthy_values_enable(self, monkeypatch, value):
+        """
+        What it does: Verifies explicit truthy values opt in.
+        Purpose: Users can still enable fake reasoning for models that accept it.
+        """
+        assert self._reload_with(monkeypatch, value).FAKE_REASONING_ENABLED is True
+
+    @pytest.mark.parametrize("value", ["false", "0", "no", "off", "disabled", "maybe", "tru", "2"])
+    def test_other_values_disable(self, monkeypatch, value):
+        """
+        What it does: Verifies falsy and unrecognized values keep it off.
+        Purpose: Typos must fail safe to the working default.
+        """
+        assert self._reload_with(monkeypatch, value).FAKE_REASONING_ENABLED is False

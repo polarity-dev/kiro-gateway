@@ -303,7 +303,7 @@ rows, then decoded back to their raw Kiro `modelId` before inference.
 | 🔌 **Anthropic-compatible API** | Native `/v1/messages` endpoint |
 | 🔀 **Multi-Account Support** | Intelligent failover between multiple accounts |
 | 🌐 **VPN/Proxy Support** | HTTP/SOCKS5 proxy for restricted networks |
-| 🧠 **Extended Thinking** | Reasoning is exclusive to our project |
+| 🧠 **Extended Thinking** | Opt-in tag-injected reasoning (`FAKE_REASONING=true`); off by default because newer models such as Opus 5.5 refuse it |
 | 👁️ **Vision Support** | Send images to model |
 | 🔍 **Web Search** | Search the web for current information |
 | 🛠️ **Tool Calling** | Supports function calling |
