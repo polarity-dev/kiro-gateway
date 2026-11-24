@@ -1357,3 +1357,161 @@ class TestTruncationRecoveryIntegration:
         
         print("Checking: Third tool call NOT marked as truncated...")
         assert aws_event_parser.tool_calls[2].get("_truncation_detected") is not True
+
+
+# ==================================================================================================
+# Tests for stop metadata (metadataEvent: stopReason / stopDetails)
+# ==================================================================================================
+
+import json as _json
+
+from kiro.upstream_stop import UpstreamStop
+
+
+def _aws_frame(payload: dict) -> bytes:
+    """Wrap a JSON payload in AWS event-stream-like binary framing."""
+    return (
+        b"\x00\x00\x01\x1c\x00\x00\x00\x5b\x8a\x1f:event-type\x07\x00\x0dmetadataEvent"
+        b":message-type\x07\x00\x05event"
+        + _json.dumps(payload).encode("utf-8")
+        + b"\xe2\x9f\x00\x01"
+    )
+
+
+REFUSAL_PAYLOAD = {
+    "stopDetails": {"refusal": {
+        "category": "REASONING_EXTRACTION",
+        "explanation": "The selected model cannot continue this conversation.",
+    }},
+    "stopReason": "CONTENT_FILTERED",
+}
+
+
+class TestAwsEventStreamParserStopEvents:
+    """Tests for stop metadata parsing in AwsEventStreamParser."""
+
+    def test_parses_end_turn_stop_event(self):
+        """
+        What it does: Parses {"stopReason":"END_TURN"} into a stop event.
+        Purpose: Normal completions expose their stop reason.
+        """
+        parser = AwsEventStreamParser()
+
+        events = parser.feed(_aws_frame({"stopReason": "END_TURN"}))
+
+        assert events == [{"type": "stop", "data": UpstreamStop(stop_reason="END_TURN")}]
+
+    def test_parses_refusal_with_stop_details_first(self):
+        """
+        What it does: Parses the refusal shape Kiro actually sends (stopDetails first).
+        Purpose: Regression test for the empty Opus 5.5 answer.
+        """
+        parser = AwsEventStreamParser()
+
+        events = parser.feed(_aws_frame(REFUSAL_PAYLOAD))
+
+        assert len(events) == 1
+        stop = events[0]["data"]
+        assert events[0]["type"] == "stop"
+        assert stop.is_refusal is True
+        assert stop.refusal_category == "REASONING_EXTRACTION"
+
+    def test_parses_refusal_with_stop_reason_first(self):
+        """
+        What it does: Parses a refusal whose first key is stopReason.
+        Purpose: JSON key order is not guaranteed.
+        """
+        parser = AwsEventStreamParser()
+        payload = {"stopReason": "CONTENT_FILTERED", "stopDetails": REFUSAL_PAYLOAD["stopDetails"]}
+
+        events = parser.feed(_aws_frame(payload))
+
+        assert len(events) == 1
+        assert events[0]["data"].is_refusal is True
+        assert events[0]["data"].refusal_category == "REASONING_EXTRACTION"
+
+    def test_nested_refusal_is_not_parsed_twice(self):
+        """
+        What it does: Ensures the nested object is consumed with its parent.
+        Purpose: A refusal must produce exactly one stop event.
+        """
+        parser = AwsEventStreamParser()
+
+        events = parser.feed(_aws_frame(REFUSAL_PAYLOAD) + _aws_frame({"contextUsagePercentage": 0.7}))
+
+        assert [e["type"] for e in events] == ["stop", "context_usage"]
+
+    def test_stop_event_split_across_chunks(self):
+        """
+        What it does: Feeds a refusal event byte by byte.
+        Purpose: Incomplete JSON must wait for more data, not be dropped.
+        """
+        parser = AwsEventStreamParser()
+        frame = _aws_frame(REFUSAL_PAYLOAD)
+
+        events = []
+        for i in range(len(frame)):
+            events.extend(parser.feed(frame[i:i + 1]))
+
+        assert len(events) == 1
+        assert events[0]["data"].is_refusal is True
+
+    def test_content_then_refusal_in_same_chunk(self):
+        """
+        What it does: Parses partial content followed by a refusal.
+        Purpose: Mid-stream refusals keep already-generated content.
+        """
+        parser = AwsEventStreamParser()
+        chunk = _aws_frame({"content": "Partial"}) + _aws_frame(REFUSAL_PAYLOAD)
+
+        events = parser.feed(chunk)
+
+        assert [e["type"] for e in events] == ["content", "stop"]
+        assert events[0]["data"] == "Partial"
+
+    def test_content_mentioning_stop_reason_is_not_a_stop_event(self):
+        """
+        What it does: Content text containing stopReason JSON stays content.
+        Purpose: Pattern matching must not break out of JSON strings.
+        """
+        parser = AwsEventStreamParser()
+        text = 'Example: {"stopReason":"CONTENT_FILTERED"}'
+
+        events = parser.feed(_aws_frame({"content": text}))
+
+        assert events == [{"type": "content", "data": text}]
+
+    def test_explanation_with_braces_and_patterns(self):
+        """
+        What it does: Parses an explanation containing braces and event patterns.
+        Purpose: Brace matching must respect quoted strings.
+        """
+        parser = AwsEventStreamParser()
+        payload = {"stopReason": "CONTENT_FILTERED", "stopDetails": {"refusal": {
+            "category": "X", "explanation": 'Bad {"content":"x"} } {',
+        }}}
+
+        events = parser.feed(_aws_frame(payload))
+
+        assert len(events) == 1
+        assert events[0]["data"].refusal_explanation == 'Bad {"content":"x"} } {'
+
+    def test_tool_stop_pattern_still_distinct(self):
+        """
+        What it does: Verifies {"stop":true} still finalizes a tool call.
+        Purpose: New stopReason patterns must not shadow tool_stop.
+        """
+        parser = AwsEventStreamParser()
+        chunk = (
+            _aws_frame({"name": "get_weather", "toolUseId": "t1", "input": ""})
+            + _aws_frame({"input": '{"city":"Rome"}'})
+            + _aws_frame({"stop": True})
+            + _aws_frame({"stopReason": "END_TURN"})
+        )
+
+        events = parser.feed(chunk)
+
+        assert [e["type"] for e in events] == ["stop"]
+        tool_calls = parser.get_tool_calls()
+        assert len(tool_calls) == 1
+        assert _json.loads(tool_calls[0]["function"]["arguments"]) == {"city": "Rome"}

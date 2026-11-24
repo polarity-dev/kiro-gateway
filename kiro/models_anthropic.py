@@ -511,7 +511,7 @@ class AnthropicMessagesResponse(BaseModel):
     content: List[Union[ThinkingContentBlock, TextContentBlock, ToolUseContentBlock]]
     model: str
     stop_reason: Optional[
-        Literal["end_turn", "max_tokens", "stop_sequence", "tool_use"]
+        Literal["end_turn", "max_tokens", "stop_sequence", "tool_use", "refusal"]
     ] = None
     stop_sequence: Optional[str] = None
     usage: AnthropicUsage

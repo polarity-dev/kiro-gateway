@@ -45,6 +45,7 @@ from kiro.config import (
     FAKE_REASONING_HANDLING,
 )
 from kiro.thinking_parser import ThinkingParser
+from kiro.upstream_stop import UpstreamStop
 
 if TYPE_CHECKING:
     from kiro.cache import ModelInfoCache
@@ -68,12 +69,13 @@ class KiroEvent:
     This format is API-agnostic and can be converted to both OpenAI and Anthropic formats.
     
     Attributes:
-        type: Event type (content, thinking, tool_use, usage, context_usage, error)
+        type: Event type (content, thinking, tool_use, usage, context_usage, stop, error)
         content: Text content (for content events)
         thinking_content: Thinking/reasoning content (for thinking events)
         tool_use: Tool use data (for tool_use events)
         usage: Usage/metering data (for usage events)
         context_usage_percentage: Context usage percentage (for context_usage events)
+        upstream_stop: Kiro stop metadata, including refusals (for stop events)
         is_first_thinking_chunk: Whether this is the first thinking chunk
         is_last_thinking_chunk: Whether this is the last thinking chunk
     """
@@ -83,6 +85,7 @@ class KiroEvent:
     tool_use: Optional[Dict[str, Any]] = None
     usage: Optional[Dict[str, Any]] = None
     context_usage_percentage: Optional[float] = None
+    upstream_stop: Optional[UpstreamStop] = None
     is_first_thinking_chunk: bool = False
     is_last_thinking_chunk: bool = False
 
@@ -98,12 +101,14 @@ class StreamResult:
         tool_calls: List of tool calls
         usage: Usage information
         context_usage_percentage: Context usage percentage from Kiro API
+        upstream_stop: Kiro stop metadata (``None`` if Kiro sent none)
     """
     content: str = ""
     thinking_content: str = ""
     tool_calls: List[Dict[str, Any]] = field(default_factory=list)
     usage: Optional[Dict[str, Any]] = None
     context_usage_percentage: Optional[float] = None
+    upstream_stop: Optional[UpstreamStop] = None
 
 
 class FirstTokenTimeoutError(Exception):
@@ -280,6 +285,9 @@ async def _process_chunk(
         
         elif event["type"] == "context_usage":
             yield KiroEvent(type="context_usage", context_usage_percentage=event["data"])
+        
+        elif event["type"] == "stop":
+            yield KiroEvent(type="stop", upstream_stop=event["data"])
 
 
 # ==================================================================================================
@@ -321,6 +329,8 @@ async def collect_stream_to_result(
             result.usage = event.usage
         elif event.type == "context_usage" and event.context_usage_percentage is not None:
             result.context_usage_percentage = event.context_usage_percentage
+        elif event.type == "stop" and event.upstream_stop is not None:
+            result.upstream_stop = event.upstream_stop
     
     # Check for bracket-style tool calls in full content
     bracket_tool_calls = parse_bracket_tool_calls(full_content_for_bracket_tools)

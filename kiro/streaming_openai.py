@@ -44,6 +44,11 @@ from kiro.config import (
     FAKE_REASONING_HANDLING,
 )
 from kiro.tokenizer import count_tokens, count_message_tokens, count_tools_tokens
+from kiro.upstream_stop import (
+    OPENAI_REFUSAL_FINISH_REASON,
+    UpstreamStop,
+    build_refusal_notice,
+)
 from kiro.tool_names import (
     EMPTY_TOOL_NAME_MAPPING,
     ToolNameMapping,
@@ -147,6 +152,7 @@ async def stream_kiro_to_openai_internal(
     
     streaming_error_occurred = False
     tool_calls_from_stream = []
+    upstream_stop: Optional[UpstreamStop] = None  # Kiro stop metadata (refusals)
 
     def format_content_chunk(content: str) -> str:
         """Format one client-facing text delta and track the first chunk."""
@@ -301,10 +307,18 @@ async def stream_kiro_to_openai_internal(
             
             elif event.type == "context_usage" and event.context_usage_percentage is not None:
                 context_usage_percentage = event.context_usage_percentage
+            
+            elif event.type == "stop" and event.upstream_stop is not None:
+                upstream_stop = event.upstream_stop
         
         pending_text = text_restorer.flush()
         if pending_text:
             yield format_content_chunk(pending_text)
+        
+        # Surface Kiro refusals as visible content instead of an empty answer
+        refused = upstream_stop is not None and upstream_stop.is_refusal
+        if refused:
+            yield format_content_chunk(build_refusal_notice(upstream_stop))
 
         # Track completion signals for truncation detection
         received_usage = metering_data is not None
@@ -334,8 +348,10 @@ async def stream_kiro_to_openai_internal(
                 f"{'Model will be notified automatically about truncation.' if TRUNCATION_RECOVERY else 'Set TRUNCATION_RECOVERY=true in .env to auto-notify model about truncation.'}"
             )
         
-        # Determine finish_reason (truncation has highest priority)
-        if content_was_truncated:
+        # Determine finish_reason (refusal, then truncation, have priority)
+        if refused:
+            finish_reason = OPENAI_REFUSAL_FINISH_REASON
+        elif content_was_truncated:
             finish_reason = "length"
         elif all_tool_calls:
             finish_reason = "tool_calls"

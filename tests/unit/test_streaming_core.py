@@ -1832,3 +1832,122 @@ class TestStreamWithFirstTokenRetryCore:
         assert make_request_call_count == 1
         assert len(chunks) == 1
         print("✓ make_request called immediately when initial_response is None")
+
+
+# ==================================================================================================
+# Tests for upstream stop metadata (refusals)
+# ==================================================================================================
+
+import json as _json
+
+from kiro.upstream_stop import UpstreamStop
+
+
+def _aws_frame(payload: dict) -> bytes:
+    """Wrap a JSON payload in AWS event-stream-like binary framing."""
+    return b"\x00\x00\x00\x9a:message-type\x07\x00\x05event" + _json.dumps(payload).encode() + b"\x8a\x1f"
+
+
+REFUSAL_PAYLOAD = {
+    "stopDetails": {"refusal": {"category": "REASONING_EXTRACTION", "explanation": "Cannot continue."}},
+    "stopReason": "CONTENT_FILTERED",
+}
+
+
+class TestUpstreamStopStreaming:
+    """Tests for stop events through parse_kiro_stream() and collect_stream_to_result()."""
+
+    @pytest.mark.asyncio
+    async def test_process_chunk_yields_stop_event(self, mock_parser):
+        """
+        What it does: Converts a parser stop event into KiroEvent(type="stop").
+        Purpose: Formatters need the upstream stop metadata.
+        """
+        stop = UpstreamStop(stop_reason="CONTENT_FILTERED")
+        mock_parser.feed.return_value = [{"type": "stop", "data": stop}]
+
+        events = [e async for e in _process_chunk(mock_parser, b"chunk", None)]
+
+        assert len(events) == 1
+        assert events[0].type == "stop"
+        assert events[0].upstream_stop is stop
+
+    @pytest.mark.asyncio
+    async def test_collect_stores_refusal(self, mock_response):
+        """
+        What it does: Collects a real-shaped refusal stream end to end.
+        Purpose: Non-streaming paths must see the refusal, not an empty success.
+        """
+        async def aiter_bytes():
+            yield _aws_frame(REFUSAL_PAYLOAD)
+            yield _aws_frame({"contextUsagePercentage": 0.77})
+
+        mock_response.aiter_bytes = aiter_bytes
+
+        with patch("kiro.streaming_core.FAKE_REASONING_ENABLED", False):
+            result = await collect_stream_to_result(mock_response, first_token_timeout=30)
+
+        assert result.content == ""
+        assert result.upstream_stop is not None
+        assert result.upstream_stop.is_refusal is True
+        assert result.upstream_stop.refusal_category == "REASONING_EXTRACTION"
+        assert result.context_usage_percentage == 0.77
+
+    @pytest.mark.asyncio
+    async def test_collect_stores_end_turn(self, mock_response):
+        """
+        What it does: Collects a normal END_TURN stream.
+        Purpose: Normal answers keep content and a non-refusal stop.
+        """
+        async def aiter_bytes():
+            yield _aws_frame({"content": "ok"}) + _aws_frame({"stopReason": "END_TURN"})
+
+        mock_response.aiter_bytes = aiter_bytes
+
+        with patch("kiro.streaming_core.FAKE_REASONING_ENABLED", False):
+            result = await collect_stream_to_result(mock_response, first_token_timeout=30)
+
+        assert result.content == "ok"
+        assert result.upstream_stop == UpstreamStop(stop_reason="END_TURN")
+
+    @pytest.mark.asyncio
+    async def test_collect_without_stop_event(self, mock_response):
+        """
+        What it does: Collects a stream with no metadata event.
+        Purpose: upstream_stop stays None when Kiro sends nothing.
+        """
+        async def aiter_bytes():
+            yield _aws_frame({"content": "ok"})
+
+        mock_response.aiter_bytes = aiter_bytes
+
+        with patch("kiro.streaming_core.FAKE_REASONING_ENABLED", False):
+            result = await collect_stream_to_result(mock_response, first_token_timeout=30)
+
+        assert result.upstream_stop is None
+
+    @pytest.mark.asyncio
+    async def test_refusal_with_thinking_parser_enabled(self, mock_response):
+        """
+        What it does: Parses a refusal while the thinking parser is active.
+        Purpose: Opt-in fake reasoning must not hide the refusal.
+        """
+        async def aiter_bytes():
+            yield _aws_frame(REFUSAL_PAYLOAD)
+
+        mock_response.aiter_bytes = aiter_bytes
+
+        with patch("kiro.streaming_core.FAKE_REASONING_ENABLED", True):
+            result = await collect_stream_to_result(mock_response, first_token_timeout=30)
+
+        assert result.upstream_stop.is_refusal is True
+        assert result.content == ""
+        assert result.thinking_content == ""
+
+    def test_stream_result_default_upstream_stop(self):
+        """
+        What it does: Checks StreamResult default.
+        Purpose: Existing constructors keep working without the new field.
+        """
+        assert StreamResult().upstream_stop is None
+        assert KiroEvent(type="content").upstream_stop is None

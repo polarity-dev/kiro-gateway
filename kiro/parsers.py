@@ -33,6 +33,7 @@ from typing import Any, Dict, List, Optional
 
 from loguru import logger
 
+from kiro.upstream_stop import parse_upstream_stop
 from kiro.utils import generate_tool_call_id
 
 
@@ -222,6 +223,7 @@ class AwsEventStreamParser:
     - tool_stop: End of tool call
     - usage: Credit consumption information
     - context_usage: Context usage percentage
+    - stop: Stop metadata (stopReason / refusal details) as UpstreamStop
     
     Attributes:
         buffer: Buffer for accumulating data
@@ -246,6 +248,9 @@ class AwsEventStreamParser:
         ('{"followupPrompt":', 'followup'),
         ('{"usage":', 'usage'),
         ('{"contextUsagePercentage":', 'context_usage'),
+        # metadataEvent: key order varies, so match both possible first keys
+        ('{"stopReason":', 'stop'),
+        ('{"stopDetails":', 'stop'),
     ]
     
     def __init__(self):
@@ -328,6 +333,8 @@ class AwsEventStreamParser:
             return {"type": "usage", "data": data.get('usage', 0)}
         elif event_type == 'context_usage':
             return {"type": "context_usage", "data": data.get('contextUsagePercentage', 0)}
+        elif event_type == 'stop':
+            return {"type": "stop", "data": parse_upstream_stop(data)}
         
         return None
     

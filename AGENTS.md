@@ -296,6 +296,7 @@ kiro-gateway/
 │   ├── payload_guards.py            # Request payload validation
 │   ├── truncation_state.py          # Truncation state tracking
 │   ├── truncation_recovery.py       # Truncation recovery system
+│   ├── upstream_stop.py             # Kiro stopReason/refusal metadata → native stop fields + notice
 │   ├── mcp_tools.py                 # MCP tools (web_search)
 │   ├── debug_logger.py              # Debug logging system
 │   ├── debug_middleware.py          # Debug middleware

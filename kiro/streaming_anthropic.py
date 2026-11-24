@@ -50,6 +50,11 @@ from kiro.streaming_core import (
 from kiro.tokenizer import count_tokens, estimate_request_tokens
 from kiro.parsers import parse_bracket_tool_calls, deduplicate_tool_calls
 from kiro.config import FIRST_TOKEN_TIMEOUT, FIRST_TOKEN_MAX_RETRIES, FAKE_REASONING_HANDLING
+from kiro.upstream_stop import (
+    ANTHROPIC_REFUSAL_STOP_REASON,
+    UpstreamStop,
+    build_refusal_notice,
+)
 from kiro.tool_names import (
     EMPTY_TOOL_NAME_MAPPING,
     ToolNameMapping,
@@ -131,6 +136,35 @@ def _extract_cache_usage_fields(usage: Optional[Dict[str, Any]]) -> Dict[str, in
     return extracted
 
 
+def format_text_block_events(index: int, text: str) -> List[str]:
+    """
+    Format a complete standalone text content block as Anthropic SSE events.
+
+    Args:
+        index: Content block index
+        text: Full text of the block
+
+    Returns:
+        SSE strings: content_block_start, content_block_delta, content_block_stop
+    """
+    return [
+        format_sse_event("content_block_start", {
+            "type": "content_block_start",
+            "index": index,
+            "content_block": {"type": "text", "text": ""},
+        }),
+        format_sse_event("content_block_delta", {
+            "type": "content_block_delta",
+            "index": index,
+            "delta": {"type": "text_delta", "text": text},
+        }),
+        format_sse_event("content_block_stop", {
+            "type": "content_block_stop",
+            "index": index,
+        }),
+    ]
+
+
 async def stream_kiro_to_anthropic(
     response: httpx.Response,
     model: str,
@@ -207,6 +241,9 @@ async def stream_kiro_to_anthropic(
     
     # Track truncated tool calls for recovery
     truncated_tools: List[Dict[str, Any]] = []
+    
+    # Stop metadata from Kiro (refusals must be surfaced, not swallowed)
+    upstream_stop: Optional[UpstreamStop] = None
     
     try:
         # Send message_start event
@@ -506,6 +543,8 @@ async def stream_kiro_to_anthropic(
                 context_usage_percentage = event.context_usage_percentage
             elif event.type == "usage" and event.usage:
                 upstream_cache_usage.update(_extract_cache_usage_fields(event.usage))
+            elif event.type == "stop" and event.upstream_stop is not None:
+                upstream_stop = event.upstream_stop
         
         pending_text = text_restorer.flush()
         if pending_text and text_block_started and text_block_index is not None:
@@ -599,6 +638,16 @@ async def stream_kiro_to_anthropic(
                 "type": "content_block_stop",
                 "index": text_block_index
             })
+            current_block_index += 1
+        
+        # Surface Kiro refusals as a visible text block instead of an empty answer
+        refused = upstream_stop is not None and upstream_stop.is_refusal
+        if refused:
+            for sse_event in format_text_block_events(
+                current_block_index, build_refusal_notice(upstream_stop)
+            ):
+                yield sse_event
+            current_block_index += 1
         
         # Detect content truncation (missing completion signals)
         content_was_truncated = (
@@ -630,8 +679,10 @@ async def stream_kiro_to_anthropic(
             if prompt_source != "unknown":
                 input_tokens = prompt_tokens
         
-        # Determine stop reason (truncation has highest priority)
-        if content_was_truncated:
+        # Determine stop reason (refusal, then truncation, have priority)
+        if refused:
+            stop_reason = ANTHROPIC_REFUSAL_STOP_REASON
+        elif content_was_truncated:
             stop_reason = "max_tokens"
         elif tool_blocks:
             stop_reason = "tool_use"
@@ -856,8 +907,18 @@ async def collect_anthropic_response(
             f"{'Model will be notified automatically about truncation.' if TRUNCATION_RECOVERY else 'Set TRUNCATION_RECOVERY=true in .env to auto-notify model about truncation.'}"
         )
     
-    # Determine stop reason (truncation has highest priority)
-    if content_was_truncated:
+    # Surface Kiro refusals as a visible text block instead of an empty answer
+    refused = result.upstream_stop is not None and result.upstream_stop.is_refusal
+    if refused:
+        content_blocks.append({
+            "type": "text",
+            "text": build_refusal_notice(result.upstream_stop),
+        })
+    
+    # Determine stop reason (refusal, then truncation, have priority)
+    if refused:
+        stop_reason = ANTHROPIC_REFUSAL_STOP_REASON
+    elif content_was_truncated:
         stop_reason = "max_tokens"
     elif tool_use_count:
         stop_reason = "tool_use"

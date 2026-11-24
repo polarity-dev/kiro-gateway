@@ -1768,3 +1768,308 @@ class TestWebSearchInterceptionAnthropic:
         assert all(b["type"] != "tool_use" for b in result["content"])
         assert result["content"][1]["content"]["type"] == "web_search_tool_result_error"
         assert result["stop_reason"] == "end_turn"
+
+
+# ==================================================================================================
+# Tests for upstream refusals (Kiro stopReason=CONTENT_FILTERED)
+# ==================================================================================================
+
+from kiro.models_anthropic import AnthropicMessagesResponse
+from kiro.upstream_stop import UpstreamStop
+
+REFUSAL_STOP = UpstreamStop(
+    stop_reason="CONTENT_FILTERED",
+    refusal_category="REASONING_EXTRACTION",
+    refusal_explanation="The selected model cannot continue this conversation.",
+)
+
+
+def _parse_sse(chunks: list) -> list:
+    """Parse Anthropic SSE strings into (event_type, data) tuples."""
+    parsed = []
+    for chunk in chunks:
+        for block in chunk.strip().split("\n\n"):
+            lines = block.split("\n")
+            event_type = lines[0].removeprefix("event: ")
+            data = json.loads(lines[1].removeprefix("data: "))
+            parsed.append((event_type, data))
+    return parsed
+
+
+def _stream_events(*kiro_events):
+    """Build a mock parse_kiro_stream yielding the given KiroEvents."""
+    async def mock_parse_kiro_stream(*args, **kwargs):
+        for event in kiro_events:
+            yield event
+    return mock_parse_kiro_stream
+
+
+async def _run_stream(mock_response, mock_model_cache, mock_auth_manager, *kiro_events) -> list:
+    """Run stream_kiro_to_anthropic over mocked events and return parsed SSE."""
+    chunks = []
+    with patch('kiro.streaming_anthropic.parse_kiro_stream', _stream_events(*kiro_events)):
+        async for chunk in stream_kiro_to_anthropic(
+            mock_response, "claude-opus-5.5", mock_model_cache, mock_auth_manager
+        ):
+            chunks.append(chunk)
+    return _parse_sse(chunks)
+
+
+def _assert_block_lifecycle(events: list) -> None:
+    """Assert every content block index is started once, stopped once, in order."""
+    starts = [d["index"] for t, d in events if t == "content_block_start"]
+    stops = [d["index"] for t, d in events if t == "content_block_stop"]
+    assert starts == list(range(len(starts))), f"non-sequential block indexes: {starts}"
+    assert sorted(stops) == starts, f"unbalanced blocks: starts={starts} stops={stops}"
+
+
+def _stop_reason(events: list) -> str:
+    """Return stop_reason from the message_delta event."""
+    deltas = [d for t, d in events if t == "message_delta"]
+    assert len(deltas) == 1
+    return deltas[0]["delta"]["stop_reason"]
+
+
+def _text_of_block(events: list, index: int) -> str:
+    """Concatenate text deltas of one content block."""
+    return "".join(
+        d["delta"]["text"] for t, d in events
+        if t == "content_block_delta" and d["index"] == index and d["delta"]["type"] == "text_delta"
+    )
+
+
+class TestStreamingAnthropicUpstreamRefusal:
+    """Tests for surfacing Kiro refusals in Anthropic streaming."""
+
+    @pytest.mark.asyncio
+    async def test_refusal_without_content_emits_notice_and_refusal_stop(
+        self, mock_response, mock_model_cache, mock_auth_manager
+    ):
+        """
+        What it does: Streams a refusal that produced no content.
+        Purpose: Regression for the empty Opus 5.5 answer: user must see why.
+        """
+        events = await _run_stream(
+            mock_response, mock_model_cache, mock_auth_manager,
+            KiroEvent(type="stop", upstream_stop=REFUSAL_STOP),
+            KiroEvent(type="context_usage", context_usage_percentage=0.77),
+        )
+
+        _assert_block_lifecycle(events)
+        assert _stop_reason(events) == "refusal"
+        notice = _text_of_block(events, 0)
+        assert "REASONING_EXTRACTION" in notice
+        assert "cannot continue this conversation" in notice
+        assert events[-1][0] == "message_stop"
+
+    @pytest.mark.asyncio
+    async def test_partial_text_then_refusal_keeps_text(
+        self, mock_response, mock_model_cache, mock_auth_manager
+    ):
+        """
+        What it does: Streams partial text followed by a refusal.
+        Purpose: Generated text is preserved; notice is a separate block.
+        """
+        events = await _run_stream(
+            mock_response, mock_model_cache, mock_auth_manager,
+            KiroEvent(type="content", content="Partial answer"),
+            KiroEvent(type="stop", upstream_stop=REFUSAL_STOP),
+            KiroEvent(type="context_usage", context_usage_percentage=1.0),
+        )
+
+        _assert_block_lifecycle(events)
+        assert _text_of_block(events, 0) == "Partial answer"
+        assert _text_of_block(events, 1).startswith("[Kiro Gateway]")
+        assert _stop_reason(events) == "refusal"
+
+    @pytest.mark.asyncio
+    async def test_thinking_then_refusal_has_valid_indexes(
+        self, mock_response, mock_model_cache, mock_auth_manager
+    ):
+        """
+        What it does: Streams an open thinking block followed by a refusal.
+        Purpose: The notice block must get a fresh index after thinking closes.
+        """
+        with patch('kiro.streaming_anthropic.FAKE_REASONING_HANDLING', 'as_reasoning_content'):
+            events = await _run_stream(
+                mock_response, mock_model_cache, mock_auth_manager,
+                KiroEvent(type="thinking", thinking_content="hmm", is_first_thinking_chunk=True),
+                KiroEvent(type="stop", upstream_stop=REFUSAL_STOP),
+            )
+
+        _assert_block_lifecycle(events)
+        block_types = [d["content_block"]["type"] for t, d in events if t == "content_block_start"]
+        assert block_types == ["thinking", "text"]
+        assert _stop_reason(events) == "refusal"
+
+    @pytest.mark.asyncio
+    async def test_refusal_overrides_tool_use_stop_reason(
+        self, mock_response, mock_model_cache, mock_auth_manager
+    ):
+        """
+        What it does: Streams a tool call followed by a refusal.
+        Purpose: Refusal has priority so the client does not run a blocked turn.
+        """
+        tool = {"id": "toolu_1", "type": "function",
+                "function": {"name": "get_weather", "arguments": '{"city":"Rome"}'}}
+        events = await _run_stream(
+            mock_response, mock_model_cache, mock_auth_manager,
+            KiroEvent(type="tool_use", tool_use=tool),
+            KiroEvent(type="stop", upstream_stop=REFUSAL_STOP),
+        )
+
+        _assert_block_lifecycle(events)
+        assert _stop_reason(events) == "refusal"
+
+    @pytest.mark.asyncio
+    async def test_refusal_overrides_truncation(
+        self, mock_response, mock_model_cache, mock_auth_manager
+    ):
+        """
+        What it does: Streams content plus refusal without completion signals.
+        Purpose: A blocked turn must not be reported as max_tokens truncation.
+        """
+        with patch('kiro.truncation_recovery.should_inject_recovery', return_value=False):
+            events = await _run_stream(
+                mock_response, mock_model_cache, mock_auth_manager,
+                KiroEvent(type="content", content="Partial"),
+                KiroEvent(type="stop", upstream_stop=REFUSAL_STOP),
+            )
+
+        assert _stop_reason(events) == "refusal"
+
+    @pytest.mark.asyncio
+    async def test_end_turn_stop_has_no_notice(
+        self, mock_response, mock_model_cache, mock_auth_manager
+    ):
+        """
+        What it does: Streams a normal answer with END_TURN metadata.
+        Purpose: Normal answers must be untouched.
+        """
+        events = await _run_stream(
+            mock_response, mock_model_cache, mock_auth_manager,
+            KiroEvent(type="content", content="ok"),
+            KiroEvent(type="stop", upstream_stop=UpstreamStop(stop_reason="END_TURN")),
+            KiroEvent(type="context_usage", context_usage_percentage=1.0),
+        )
+
+        _assert_block_lifecycle(events)
+        assert [t for t, _ in events].count("content_block_start") == 1
+        assert _text_of_block(events, 0) == "ok"
+        assert _stop_reason(events) == "end_turn"
+
+    @pytest.mark.asyncio
+    async def test_notice_excluded_from_output_tokens(
+        self, mock_response, mock_model_cache, mock_auth_manager
+    ):
+        """
+        What it does: Checks output_tokens for a refusal with no content.
+        Purpose: The gateway notice is not model output.
+        """
+        events = await _run_stream(
+            mock_response, mock_model_cache, mock_auth_manager,
+            KiroEvent(type="stop", upstream_stop=REFUSAL_STOP),
+        )
+
+        delta = [d for t, d in events if t == "message_delta"][0]
+        assert delta["usage"]["output_tokens"] == 0
+
+    @pytest.mark.asyncio
+    async def test_real_byte_stream_end_to_end(self, mock_response, mock_model_cache, mock_auth_manager):
+        """
+        What it does: Feeds real-shaped Kiro bytes through the unmocked parser.
+        Purpose: Verify parser, core and formatter cooperate on the observed refusal.
+        """
+        payload = {
+            "stopDetails": {"refusal": {"category": "REASONING_EXTRACTION",
+                                        "explanation": "The selected model cannot continue this conversation."}},
+            "stopReason": "CONTENT_FILTERED",
+        }
+
+        async def aiter_bytes():
+            yield b"\x00\x00\x01S\x00\x00\x00\xa0:message-type\x07\x00\x05event" + json.dumps(payload).encode()
+            yield b"\x00\x00\x00W:message-type\x07\x00\x05event" + b'{"contextUsagePercentage":0.77}'
+
+        mock_response.aiter_bytes = aiter_bytes
+
+        chunks = []
+        with patch('kiro.streaming_core.FAKE_REASONING_ENABLED', False):
+            async for chunk in stream_kiro_to_anthropic(
+                mock_response, "claude-opus-5.5", mock_model_cache, mock_auth_manager
+            ):
+                chunks.append(chunk)
+        events = _parse_sse(chunks)
+
+        _assert_block_lifecycle(events)
+        assert _stop_reason(events) == "refusal"
+        assert "cannot continue this conversation" in _text_of_block(events, 0)
+
+
+class TestCollectAnthropicResponseUpstreamRefusal:
+    """Tests for surfacing Kiro refusals in Anthropic non-streaming responses."""
+
+    @pytest.mark.asyncio
+    async def test_refusal_returns_notice_and_refusal_stop(
+        self, mock_response, mock_model_cache, mock_auth_manager
+    ):
+        """
+        What it does: Collects a refusal with no content.
+        Purpose: Non-streaming clients see the reason, not content=[].
+        """
+        result_in = StreamResult(context_usage_percentage=0.77, upstream_stop=REFUSAL_STOP)
+
+        with patch('kiro.streaming_anthropic.collect_stream_to_result', return_value=result_in):
+            result = await collect_anthropic_response(
+                mock_response, "claude-opus-5.5", mock_model_cache, mock_auth_manager
+            )
+
+        assert result["stop_reason"] == "refusal"
+        assert len(result["content"]) == 1
+        assert result["content"][0]["type"] == "text"
+        assert "REASONING_EXTRACTION" in result["content"][0]["text"]
+        assert result["usage"]["output_tokens"] == 0
+        AnthropicMessagesResponse(**result)  # must validate against our schema
+
+    @pytest.mark.asyncio
+    async def test_refusal_after_text_and_tool_use(
+        self, mock_response, mock_model_cache, mock_auth_manager
+    ):
+        """
+        What it does: Collects text + tool call + refusal.
+        Purpose: Notice is appended last and refusal wins over tool_use.
+        """
+        result_in = StreamResult(
+            content="Partial",
+            tool_calls=[{"id": "toolu_1", "function": {"name": "f", "arguments": "{}"}}],
+            context_usage_percentage=1.0,
+            upstream_stop=REFUSAL_STOP,
+        )
+
+        with patch('kiro.streaming_anthropic.collect_stream_to_result', return_value=result_in):
+            result = await collect_anthropic_response(
+                mock_response, "claude-opus-5.5", mock_model_cache, mock_auth_manager
+            )
+
+        assert [b["type"] for b in result["content"]] == ["text", "tool_use", "text"]
+        assert result["content"][0]["text"] == "Partial"
+        assert result["content"][-1]["text"].startswith("[Kiro Gateway]")
+        assert result["stop_reason"] == "refusal"
+
+    @pytest.mark.asyncio
+    async def test_end_turn_stop_unchanged(self, mock_response, mock_model_cache, mock_auth_manager):
+        """
+        What it does: Collects a normal END_TURN answer.
+        Purpose: No notice, stop_reason stays end_turn.
+        """
+        result_in = StreamResult(
+            content="ok", context_usage_percentage=1.0,
+            upstream_stop=UpstreamStop(stop_reason="END_TURN"),
+        )
+
+        with patch('kiro.streaming_anthropic.collect_stream_to_result', return_value=result_in):
+            result = await collect_anthropic_response(
+                mock_response, "claude-opus-5.5", mock_model_cache, mock_auth_manager
+            )
+
+        assert result["content"] == [{"type": "text", "text": "ok"}]
+        assert result["stop_reason"] == "end_turn"

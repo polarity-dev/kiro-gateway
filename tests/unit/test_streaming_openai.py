@@ -1524,3 +1524,174 @@ class TestWebSearchInterceptionOpenai:
         assert '"tool_calls"' not in joined
         assert "failed" in joined
         assert '"finish_reason": "tool_calls"' not in joined
+
+
+# ==================================================================================================
+# Tests for upstream refusals (Kiro stopReason=CONTENT_FILTERED)
+# ==================================================================================================
+
+from kiro.upstream_stop import UpstreamStop
+
+REFUSAL_STOP = UpstreamStop(
+    stop_reason="CONTENT_FILTERED",
+    refusal_category="REASONING_EXTRACTION",
+    refusal_explanation="The selected model cannot continue this conversation.",
+)
+
+
+def _openai_stream_events(*kiro_events):
+    """Build a mock parse_kiro_stream yielding the given KiroEvents."""
+    async def mock_parse_kiro_stream(*args, **kwargs):
+        for event in kiro_events:
+            yield event
+    return mock_parse_kiro_stream
+
+
+def _parse_openai_chunks(chunks: list) -> list:
+    """Parse OpenAI SSE strings into chunk dicts (excluding [DONE])."""
+    parsed = []
+    for chunk in chunks:
+        data = chunk.removeprefix("data: ").strip()
+        if data and data != "[DONE]":
+            parsed.append(json.loads(data))
+    return parsed
+
+
+class TestStreamingOpenaiUpstreamRefusal:
+    """Tests for surfacing Kiro refusals in OpenAI streaming and non-streaming."""
+
+    async def _run(self, client, response, cache, auth, *kiro_events) -> list:
+        """Run the OpenAI stream over mocked events and return raw chunks."""
+        chunks = []
+        with patch('kiro.streaming_openai.parse_kiro_stream', _openai_stream_events(*kiro_events)):
+            async for chunk in stream_kiro_to_openai(client, response, "claude-opus-5.5", cache, auth):
+                chunks.append(chunk)
+        return chunks
+
+    @pytest.mark.asyncio
+    async def test_refusal_emits_notice_and_content_filter(
+        self, mock_http_client, mock_response, mock_model_cache, mock_auth_manager
+    ):
+        """
+        What it does: Streams a refusal with no content.
+        Purpose: Client sees the reason and finish_reason=content_filter.
+        """
+        chunks = await self._run(
+            mock_http_client, mock_response, mock_model_cache, mock_auth_manager,
+            KiroEvent(type="stop", upstream_stop=REFUSAL_STOP),
+            KiroEvent(type="context_usage", context_usage_percentage=0.77),
+        )
+        parsed = _parse_openai_chunks(chunks)
+
+        assert chunks[-1] == "data: [DONE]\n\n"
+        content = "".join(c["choices"][0]["delta"].get("content", "") for c in parsed)
+        assert "REASONING_EXTRACTION" in content
+        assert parsed[0]["choices"][0]["delta"]["role"] == "assistant"
+        assert parsed[-1]["choices"][0]["finish_reason"] == "content_filter"
+        assert parsed[-1]["usage"]["completion_tokens"] == 0
+
+    @pytest.mark.asyncio
+    async def test_partial_text_then_refusal(
+        self, mock_http_client, mock_response, mock_model_cache, mock_auth_manager
+    ):
+        """
+        What it does: Streams partial text followed by a refusal.
+        Purpose: Notice is appended after preserved text; role sent only once.
+        """
+        chunks = await self._run(
+            mock_http_client, mock_response, mock_model_cache, mock_auth_manager,
+            KiroEvent(type="content", content="Partial"),
+            KiroEvent(type="stop", upstream_stop=REFUSAL_STOP),
+        )
+        parsed = _parse_openai_chunks(chunks)
+        deltas = [c["choices"][0]["delta"] for c in parsed]
+
+        assert deltas[0]["content"] == "Partial"
+        assert deltas[1]["content"].startswith("[Kiro Gateway]")
+        assert sum(1 for d in deltas if "role" in d) == 1
+        assert parsed[-1]["choices"][0]["finish_reason"] == "content_filter"
+
+    @pytest.mark.asyncio
+    async def test_refusal_overrides_tool_calls(
+        self, mock_http_client, mock_response, mock_model_cache, mock_auth_manager
+    ):
+        """
+        What it does: Streams a tool call followed by a refusal.
+        Purpose: Refusal has priority over tool_calls.
+        """
+        tool = {"id": "call_1", "type": "function",
+                "function": {"name": "get_weather", "arguments": "{}"}}
+        chunks = await self._run(
+            mock_http_client, mock_response, mock_model_cache, mock_auth_manager,
+            KiroEvent(type="tool_use", tool_use=tool),
+            KiroEvent(type="stop", upstream_stop=REFUSAL_STOP),
+        )
+
+        assert _parse_openai_chunks(chunks)[-1]["choices"][0]["finish_reason"] == "content_filter"
+
+    @pytest.mark.asyncio
+    async def test_end_turn_stop_unchanged(
+        self, mock_http_client, mock_response, mock_model_cache, mock_auth_manager
+    ):
+        """
+        What it does: Streams a normal answer with END_TURN metadata.
+        Purpose: No notice and finish_reason stays stop.
+        """
+        chunks = await self._run(
+            mock_http_client, mock_response, mock_model_cache, mock_auth_manager,
+            KiroEvent(type="content", content="ok"),
+            KiroEvent(type="stop", upstream_stop=UpstreamStop(stop_reason="END_TURN")),
+            KiroEvent(type="context_usage", context_usage_percentage=1.0),
+        )
+        parsed = _parse_openai_chunks(chunks)
+
+        content = "".join(c["choices"][0]["delta"].get("content", "") for c in parsed)
+        assert content == "ok"
+        assert parsed[-1]["choices"][0]["finish_reason"] == "stop"
+
+    @pytest.mark.asyncio
+    async def test_non_streaming_refusal(
+        self, mock_http_client, mock_response, mock_model_cache, mock_auth_manager
+    ):
+        """
+        What it does: Collects a refusal through collect_stream_response().
+        Purpose: Non-streaming clients get the notice and content_filter.
+        """
+        with patch('kiro.streaming_openai.parse_kiro_stream',
+                   _openai_stream_events(KiroEvent(type="stop", upstream_stop=REFUSAL_STOP))):
+            result = await collect_stream_response(
+                mock_http_client, mock_response, "claude-opus-5.5", mock_model_cache, mock_auth_manager
+            )
+
+        choice = result["choices"][0]
+        assert choice["finish_reason"] == "content_filter"
+        assert "cannot continue this conversation" in choice["message"]["content"]
+
+    @pytest.mark.asyncio
+    async def test_real_byte_stream_end_to_end(
+        self, mock_http_client, mock_response, mock_model_cache, mock_auth_manager
+    ):
+        """
+        What it does: Feeds real-shaped Kiro bytes through the unmocked parser.
+        Purpose: Verify parser, core and OpenAI formatter cooperate on the refusal.
+        """
+        payload = {
+            "stopDetails": {"refusal": {"category": "REASONING_EXTRACTION", "explanation": "Cannot continue."}},
+            "stopReason": "CONTENT_FILTERED",
+        }
+
+        async def aiter_bytes():
+            yield b"\x00\x00\x01S:message-type\x07\x00\x05event" + json.dumps(payload).encode()
+
+        mock_response.aiter_bytes = aiter_bytes
+
+        chunks = []
+        with patch('kiro.streaming_core.FAKE_REASONING_ENABLED', False):
+            async for chunk in stream_kiro_to_openai(
+                mock_http_client, mock_response, "claude-opus-5.5", mock_model_cache, mock_auth_manager
+            ):
+                chunks.append(chunk)
+        parsed = _parse_openai_chunks(chunks)
+
+        assert "Cannot continue." in parsed[0]["choices"][0]["delta"]["content"]
+        assert parsed[-1]["choices"][0]["finish_reason"] == "content_filter"
